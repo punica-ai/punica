@@ -1,5 +1,6 @@
 import abc
 import dataclasses
+import gc
 import time
 from typing import Callable
 
@@ -81,4 +82,10 @@ def bench(
       latency[i] = t1 - t0
 
   b.teardown()
+  del cache
   return BenchResult(warmup, repeat, latency)
+
+
+def gc_torch():
+  gc.collect()
+  torch.cuda.empty_cache()

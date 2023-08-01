@@ -1,6 +1,9 @@
-import punica.ops
+import itertools
+
 import torch
-from benchmark_utils import (Benchmark, BenchResult, bench)
+from benchmark_utils import bench, gc_torch
+
+import punica.ops
 
 
 class mha_decode_Resources:
@@ -42,7 +45,7 @@ class mha_decode_Resources:
 
 
 def bench_rotary_mha_decode_fixed_length():
-  test_args = [
+  model_sizes = [
       # Regular sizes
       (12, 64, 12, 2048, "float16"),
       (16, 64, 24, 2048, "float16"),
@@ -52,7 +55,7 @@ def bench_rotary_mha_decode_fixed_length():
       (40, 128, 40, 2048, "float16"),
       (56, 128, 48, 2048, "float16"),
       (72, 128, 64, 2048, "float16"),
-      (96, 128, 96, 2048, "float16"),
+      # (96, 128, 96, 2048, "float16"),
 
       # Irregular sizes
       (32, 128, 32, 3333, "float16"),
@@ -61,34 +64,43 @@ def bench_rotary_mha_decode_fixed_length():
       (13, 128, 32, 2048, "float16"),
       (13, 64, 17, 3333, "float16"),
   ]
+  batch_sizes = list(range(1, 17))
   device = torch.device("cuda:0")
 
   print("bench_rotary_mha_decode_fixed_length")
-  for (num_heads, head_dim, num_layers, maxlen, dtype_str) in test_args:
+  for (num_heads, head_dim, num_layers, maxlen,
+       dtype_str), batch_size in itertools.product(model_sizes, batch_sizes):
     torch.manual_seed(0xabcdabcd987)
-    batch_size = 1
     past_lens = 10
     layer_idx = 0
-    t = mha_decode_Resources(
-        num_heads=num_heads,
-        head_dim=head_dim,
-        num_layers=num_layers,
-        maxlen=maxlen,
-        batch_size=1,
-        past_lens=past_lens,
-        dtype=dtype_str,
-        device=device,
-    )
-    result = bench(lambda: punica.ops.rotary_mha_decode(
-        t.q_proj, t.k_proj, t.v_proj, t.past_lens, t.kvbuf, t.kvidx, layer_idx))
-    print(" | ".join([
+    outputs = [
         f"n={num_heads}",
         f"d={head_dim:3d}",
         f"l={num_layers}",
         f"maxlen={maxlen}",
         f"{dtype_str}",
-        f"{result.avg()*1e6:4.0f}±{result.std()*1e6:4.0f}us",
-    ]))
+        f"bs={batch_size:2d}",
+    ]
+    try:
+      gc_torch()
+      t = mha_decode_Resources(
+          num_heads=num_heads,
+          head_dim=head_dim,
+          num_layers=num_layers,
+          maxlen=maxlen,
+          batch_size=batch_size,
+          past_lens=past_lens,
+          dtype=dtype_str,
+          device=device,
+      )
+      result = bench(lambda: punica.ops.rotary_mha_decode(
+          t.q_proj, t.k_proj, t.v_proj, t.past_lens, t.kvbuf, t.kvidx, layer_idx
+      ))
+      outputs.append(f"{result.avg()*1e6:3.0f}us±{result.std()*1e6:3.0f}us")
+    except torch.cuda.OutOfMemoryError:
+      outputs.append("OOM")
+
+    print(" | ".join(outputs))
 
 
 if __name__ == "__main__":
