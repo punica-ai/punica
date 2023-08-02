@@ -1,9 +1,10 @@
 import itertools
 
 import torch
-from benchmark_utils import bench, gc_torch
 
 import punica.ops
+
+from .benchmark_utils import bench, gc_torch
 
 
 class mha_decode_Resources:
