@@ -12,7 +12,7 @@ import scipy.stats
 import torch
 from tqdm.auto import tqdm
 
-from .benchmark_utils import gc_torch
+from .benchmark_utils import batched
 
 
 @dataclasses.dataclass
@@ -65,7 +65,6 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                    rs: RequestSet) -> TextGenBenchResult:
   from punica.models.llama import LlamaConfig, LlamaForCausalLM
   from punica.utils import CatTensor, KvPool
-  gc_torch()
   torch.manual_seed(0xabcdabcd987)
   device = torch.device(model_cfg.device)
   dtype = getattr(torch, model_cfg.dtype)
@@ -101,11 +100,14 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     decode_start_at: float
     decode_latency: float
 
-  t_start = time.perf_counter()
   next_req_idx = 0
   workset = []
   done = []
-  pbar = tqdm(total=rs.output_lens.sum() + rs.prompt_lens.sum(), unit="token")
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="punica")
+  t_start = time.perf_counter()
   while len(done) != len(rs):
     # Add new requests to workset
     while len(workset) < textgen_cfg.batch_size and next_req_idx < len(rs):
@@ -117,7 +119,7 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
           0, 32000, (prompt_len,), dtype=torch.long, device=device)
 
       # Run encode separately because current implementation cannot mix
-      # endcode and decode.
+      # encode and decode.
       t0 = time.perf_counter()
       past_lens = torch.tensor([0], dtype=torch.long, device=device)
       kvidx = torch.tensor([kv_idx], dtype=torch.long, device=device)
@@ -155,7 +157,7 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     assert len(next_tokens) == len(workset)
     pbar.update(len(workset))
     new_workset = []
-    for batch_idx, logits in enumerate(logits.split()):
+    for batch_idx in range(len(workset)):
       req = workset[batch_idx]
       req.output.append(next_tokens[batch_idx])
       if len(req.output) == rs.output_lens[req.req_idx]:
@@ -176,6 +178,88 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   )
 
 
+@torch.inference_mode()
+def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                   rs: RequestSet) -> TextGenBenchResult:
+  """
+  Requests in one batch remain in the same batch for the entire encode
+  and decode process.
+  Pad requests to the longest length in the batch.
+  Repeat decode until all requests are done.
+  """
+  from transformers import LlamaConfig, LlamaForCausalLM
+  torch.manual_seed(0xabcdabcd987)
+  device = torch.device(model_cfg.device)
+  dtype = getattr(torch, model_cfg.dtype)
+  default_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  with device:
+    model = LlamaForCausalLM(
+        LlamaConfig(
+            hidden_size=model_cfg.hidden_size,
+            num_attention_heads=model_cfg.num_heads,
+            intermediate_size=model_cfg.intermediate_size,
+            num_hidden_layers=model_cfg.num_layers,
+        )).to(device)
+  torch.set_default_dtype(default_dtype)
+
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="hf_pad")
+  model_kwargs = dict(
+      use_cache=True,
+      output_attentions=False,
+      output_hidden_states=False,
+      return_dict=True,
+  )
+  encode_latency = []
+  decode_latency = []
+  t_start = time.perf_counter()
+  for req_indicies in batched(range(len(rs)), textgen_cfg.batch_size):
+    bs = len(req_indicies)
+    # Encode
+    input_ids = [
+        torch.randint(
+            0, 32000, (rs.prompt_lens[idx],), dtype=torch.long, device=device)
+        for idx in req_indicies
+    ]
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=0.0)
+    t0 = time.perf_counter()
+    ret = model(input_ids=input_ids, **model_kwargs)
+    past_key_values = ret.past_key_values
+    input_ids = torch.argmax(ret.logits[:, -1, :], dim=-1, keepdim=True)
+    outputs = [[t] for t in input_ids.view(bs).cpu().numpy()]
+    t1 = time.perf_counter()
+    pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))
+
+    # Decode
+    for _ in range(max(rs.output_lens[idx] - 1 for idx in req_indicies)):
+      ret = model(
+          input_ids=input_ids, past_key_values=past_key_values, **model_kwargs)
+      past_key_values = ret.past_key_values
+      input_ids = torch.argmax(ret.logits, dim=-1)
+      next_tokens = input_ids.view(bs).cpu().numpy()
+      for i in range(bs):
+        if len(outputs[i]) < rs.output_lens[req_indicies[i]]:
+          outputs[i].append(next_tokens[i])
+          pbar.update()
+    t2 = time.perf_counter()
+
+    for _ in range(len(req_indicies)):
+      encode_latency.append(t1 - t0)
+      decode_latency.append(t2 - t1)
+  t_end = time.perf_counter()
+  pbar.close()
+
+  return TextGenBenchResult(
+      encode_latency=np.array(encode_latency),
+      decode_latency=np.array(decode_latency),
+      duration=t_end - t_start,
+  )
+
+
 def main():
   model_cfg = ModelConfig(
       num_layers=32,
@@ -185,11 +269,13 @@ def main():
       dtype="float16",
       device="cuda:0",
   )
-  rs = generate_request_set(num_requests=50, maxlen=500)
-  textgen_cfg = TextGenConfig(batch_size=8)
-  res = textgen_punica(model_cfg, textgen_cfg, rs)
+  rs = generate_request_set(num_requests=50, maxlen=2048)
+  textgen_cfg = TextGenConfig(batch_size=4)
+  # res = textgen_punica(model_cfg, textgen_cfg, rs)
+  res = textgen_hf_pad(model_cfg, textgen_cfg, rs)
 
   t = res.encode_latency / rs.prompt_lens
+  print("num_requests:", len(rs))
   print("batch_size:", textgen_cfg.batch_size)
   print(
       "encode_latency:",
@@ -198,10 +284,12 @@ def main():
   t = res.decode_latency / rs.output_lens
   print("decode_latency:",
         f"{t.mean()*1e3:.3f}ms ± {t.std()*1e3:.3f}ms per token")
-  t = rs.output_lens / res.decode_latency
-  print("decode_throughput:",
-        f"{t.mean():.3f} tokens/s ± {t.std():.3f} tokens/s")
+  print("total prompt tokens:", rs.prompt_lens.sum())
+  print("total new tokens:", rs.output_lens.sum())
   print("duration:", f"{res.duration:.3f}s")
+  print(
+      "throughput ((prompt+new)/duration):",
+      f"{(rs.prompt_lens.sum()+rs.output_lens.sum())/res.duration:.3f} token/s")
 
 
 if __name__ == "__main__":
