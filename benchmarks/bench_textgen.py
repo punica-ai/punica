@@ -233,8 +233,12 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     outputs = [[t] for t in input_ids.view(bs).cpu().numpy()]
     t1 = time.perf_counter()
     pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))
+    for _ in range(len(req_indicies)):
+      encode_latency.append(t1 - t0)
 
     # Decode
+    dl = [None] * bs
+    t2 = time.perf_counter()
     for _ in range(max(rs.output_lens[idx] - 1 for idx in req_indicies)):
       ret = model(
           input_ids=input_ids, past_key_values=past_key_values, **model_kwargs)
@@ -242,14 +246,13 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       input_ids = torch.argmax(ret.logits, dim=-1)
       next_tokens = input_ids.view(bs).cpu().numpy()
       for i in range(bs):
-        if len(outputs[i]) < rs.output_lens[req_indicies[i]]:
+        outlen = rs.output_lens[req_indicies[i]]
+        if len(outputs[i]) < outlen:
           outputs[i].append(next_tokens[i])
           pbar.update()
-    t2 = time.perf_counter()
-
-    for _ in range(len(req_indicies)):
-      encode_latency.append(t1 - t0)
-      decode_latency.append(t2 - t1)
+          if len(outputs[i]) == outlen:
+            dl[i] = time.perf_counter() - t2
+    decode_latency.extend(dl)
   t_end = time.perf_counter()
   pbar.close()
 
@@ -270,7 +273,7 @@ def main():
       device="cuda:0",
   )
   rs = generate_request_set(num_requests=50, maxlen=2048)
-  textgen_cfg = TextGenConfig(batch_size=4)
+  textgen_cfg = TextGenConfig(batch_size=16)
   # res = textgen_punica(model_cfg, textgen_cfg, rs)
   res = textgen_hf_pad(model_cfg, textgen_cfg, rs)
 
