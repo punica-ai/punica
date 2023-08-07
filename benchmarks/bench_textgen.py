@@ -4,6 +4,7 @@ First come first serve.
 Greedy generation, no sampling, no beam search.
 """
 
+import argparse
 import dataclasses
 import logging
 import time
@@ -179,9 +180,9 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   )
 
 
-@torch.inference_mode()
-def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
-                   rs: RequestSet) -> TextGenBenchResult:
+def _textgen_hf_pad_internal(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                             rs: RequestSet,
+                             use_deepspeed: bool) -> TextGenBenchResult:
   """
   Requests in one batch remain in the same batch for the entire encode
   and decode process.
@@ -203,11 +204,16 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
             num_hidden_layers=model_cfg.num_layers,
         )).to(device)
   torch.set_default_dtype(default_dtype)
+  if use_deepspeed:
+    import deepspeed
+    ds_engine = deepspeed.init_inference(
+        model=model, max_out_tokens=2048, replace_with_kernel_inject=True)
+    model = ds_engine.module
 
   pbar = tqdm(
       total=rs.output_lens.sum() + rs.prompt_lens.sum(),
       unit="token",
-      desc="hf_pad")
+      desc="hf_pad" if not use_deepspeed else "ds_pad")
   model_kwargs = dict(
       use_cache=True,
       output_attentions=False,
@@ -264,6 +270,21 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   )
 
 
+@torch.inference_mode()
+def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                   rs: RequestSet) -> TextGenBenchResult:
+  return _textgen_hf_pad_internal(
+      model_cfg, textgen_cfg, rs, use_deepspeed=False)
+
+
+@torch.inference_mode()
+def textgen_ds_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                   rs: RequestSet) -> TextGenBenchResult:
+  return _textgen_hf_pad_internal(
+      model_cfg, textgen_cfg, rs, use_deepspeed=True)
+
+
+@torch.inference_mode()
 def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                  rs: RequestSet) -> TextGenBenchResult:
   import vllm.transformers_utils.config
@@ -365,6 +386,17 @@ def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
 
 
 def main():
+  BENCH_FN = {
+      "punica": textgen_punica,
+      "hf_pad": textgen_hf_pad,
+      "ds_pad": textgen_ds_pad,
+      "vllm": textgen_vllm,
+  }
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--system", choices=BENCH_FN.keys(), required=True)
+  args = parser.parse_args()
+  bench_fn = BENCH_FN[args.system]
+
   model_cfg = ModelConfig(
       num_layers=32,
       num_heads=32,
@@ -375,9 +407,7 @@ def main():
   )
   rs = generate_request_set(num_requests=50, maxlen=2048)
   textgen_cfg = TextGenConfig(batch_size=16)
-  res = textgen_punica(model_cfg, textgen_cfg, rs)
-  # res = textgen_hf_pad(model_cfg, textgen_cfg, rs)
-  # res = textgen_vllm(model_cfg, textgen_cfg, rs)
+  res = bench_fn(model_cfg, textgen_cfg, rs)
 
   t = res.encode_latency / rs.prompt_lens
   print("num_requests:", len(rs))
