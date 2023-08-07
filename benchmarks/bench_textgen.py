@@ -5,6 +5,7 @@ Greedy generation, no sampling, no beam search.
 """
 
 import dataclasses
+import logging
 import time
 
 import numpy as np
@@ -30,7 +31,7 @@ def generate_request_set(num_requests: int, maxlen: int) -> RequestSet:
   total_dist = scipy.stats.randint(0, maxlen)
   prompt_lens = np.minimum(
       prompt_dist.rvs(size=num_requests, random_state=rng),
-      maxlen).astype(np.int32)
+      maxlen - 2).astype(np.int32)
   total_lens = np.maximum(prompt_lens + 2,
                           total_dist.rvs(size=num_requests,
                                          random_state=rng)).astype(np.int32)
@@ -263,6 +264,92 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   )
 
 
+def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                 rs: RequestSet) -> TextGenBenchResult:
+  from vllm import EngineArgs, LLMEngine, SamplingParams
+  logging.getLogger("vllm").setLevel(logging.ERROR)
+  rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  llm_engine = LLMEngine.from_engine_args(
+      EngineArgs(
+          model="decapoda-research/llama-7b-hf",
+          tokenizer="hf-internal-testing/llama-tokenizer",
+          dtype="float16",
+          use_dummy_weights=True,
+      ))
+
+  @dataclasses.dataclass
+  class RequestContext:
+    req_idx: int
+
+    encode_start_at: float
+    encode_latency: float
+    decode_start_at: float
+    decode_latency: float
+
+  next_req_idx = 0
+  workset = {}
+  done = []
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="vllm")
+
+  t_start = time.perf_counter()
+  while len(done) != len(rs):
+    # Add new requests to workset
+    while len(workset) < textgen_cfg.batch_size and next_req_idx < len(rs):
+      idx = next_req_idx
+      next_req_idx += 1
+      prompt_ids = rng.integers(
+          0, 32000, (rs.prompt_lens[idx],), dtype=np.int32).tolist()
+      sampling_params = SamplingParams(
+          n=1, temperature=0.0, ignore_eos=True, max_tokens=rs.output_lens[idx])
+      t0 = time.perf_counter()
+      reqid = str(idx)
+      llm_engine.add_request(
+          reqid,
+          prompt=None,
+          sampling_params=sampling_params,
+          prompt_token_ids=prompt_ids)
+      workset[reqid] = RequestContext(
+          req_idx=idx,
+          encode_start_at=t0,
+          encode_latency=0.0,
+          decode_start_at=0.0,
+          decode_latency=0.0,
+      )
+
+    # Run vLLM
+    step_outputs = llm_engine.step()
+    t1 = time.perf_counter()
+    for out in step_outputs:
+      ctx = workset[out.request_id]
+      out_tokens = out.outputs[0].token_ids
+      if len(out_tokens) == 1:
+        ctx.encode_latency = t1 - ctx.encode_start_at
+        ctx.decode_start_at = t1
+        pbar.update(rs.prompt_lens[ctx.req_idx] + 1)
+      else:
+        pbar.update(1)
+
+      if out.finished:
+        assert len(out_tokens) == rs.output_lens[ctx.req_idx]
+      if len(out_tokens) == rs.output_lens[ctx.req_idx]:
+        assert out.finished
+        ctx.decode_latency = t1 - ctx.decode_start_at
+        done.append(ctx)
+        del workset[out.request_id]
+  t_end = time.perf_counter()
+  pbar.close()
+
+  done.sort(key=lambda req: req.req_idx)
+  return TextGenBenchResult(
+      encode_latency=np.array([req.encode_latency for req in done]),
+      decode_latency=np.array([req.decode_latency for req in done]),
+      duration=t_end - t_start,
+  )
+
+
 def main():
   model_cfg = ModelConfig(
       num_layers=32,
@@ -274,8 +361,9 @@ def main():
   )
   rs = generate_request_set(num_requests=50, maxlen=2048)
   textgen_cfg = TextGenConfig(batch_size=16)
-  # res = textgen_punica(model_cfg, textgen_cfg, rs)
-  res = textgen_hf_pad(model_cfg, textgen_cfg, rs)
+  res = textgen_punica(model_cfg, textgen_cfg, rs)
+  # res = textgen_hf_pad(model_cfg, textgen_cfg, rs)
+  # res = textgen_vllm(model_cfg, textgen_cfg, rs)
 
   t = res.encode_latency / rs.prompt_lens
   print("num_requests:", len(rs))
