@@ -266,12 +266,26 @@ def textgen_hf_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
 
 def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                  rs: RequestSet) -> TextGenBenchResult:
+  import vllm.transformers_utils.config
+  from transformers import LlamaConfig
   from vllm import EngineArgs, LLMEngine, SamplingParams
-  logging.getLogger("vllm").setLevel(logging.ERROR)
+
+  class FakeModelConfig(LlamaConfig):
+
+    def __init__(self, **kwargs):
+      kwargs["num_hidden_layers"] = model_cfg.num_layers
+      kwargs["num_attention_heads"] = model_cfg.num_heads
+      kwargs["hidden_size"] = model_cfg.hidden_size
+      kwargs["intermediate_size"] = model_cfg.intermediate_size
+      kwargs["torch_dtype"] = model_cfg.dtype
+      super().__init__(**kwargs)
+
+  vllm.transformers_utils.config._CONFIG_REGISTRY["llama"] = FakeModelConfig
+  logging.getLogger("vllm").setLevel(logging.WARNING)
   rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
   llm_engine = LLMEngine.from_engine_args(
       EngineArgs(
-          model="decapoda-research/llama-7b-hf",
+          model="decapoda-research/llama-13b-hf",
           tokenizer="hf-internal-testing/llama-tokenizer",
           dtype="float16",
           use_dummy_weights=True,
