@@ -46,8 +46,8 @@ class ModelConfig:
   num_heads: int
   hidden_size: int
   intermediate_size: int
-  dtype: str
-  device: str
+  dtype: str = dataclasses.field(default="float16")
+  device: str = dataclasses.field(default="cuda:0")
 
 
 @dataclasses.dataclass
@@ -451,29 +451,51 @@ def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   )
 
 
-def main():
-  BENCH_FN = {
-      "punica": textgen_punica,
-      "hf_pad": textgen_hf_pad,
-      "ds_pad": textgen_ds_pad,
-      "ft_pad": textgen_ft_pad,
-      "vllm": textgen_vllm,
-  }
+BENCH_FN = {
+    "punica": textgen_punica,
+    "vllm": textgen_vllm,
+    "hf_pad": textgen_hf_pad,
+    "ds_pad": textgen_ds_pad,
+    "ft_pad": textgen_ft_pad,
+}
+
+MODEL_CFGS = {
+    "7b":
+        ModelConfig(
+            num_layers=32,
+            num_heads=32,
+            hidden_size=4096,
+            intermediate_size=11008,
+        ),
+    "13b":
+        ModelConfig(
+            num_layers=40,
+            num_heads=40,
+            hidden_size=5120,
+            intermediate_size=13824,
+        ),
+}
+
+
+def bench_one():
   parser = argparse.ArgumentParser()
-  parser.add_argument("--system", choices=BENCH_FN.keys(), required=True)
+  parser.add_argument("--system", choices=BENCH_FN.keys(), default="punica")
+  parser.add_argument("--model", choices=MODEL_CFGS.keys(), default="7b")
+  parser.add_argument("--batch_size", type=int, default=16)
+  parser.add_argument("--num_batches", type=int, default=10)
+  parser.add_argument("--maxlen", type=int, default=2048)
+  parser.add_argument(
+      "--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
+  parser.add_argument("--device", default="cuda:0")
   args = parser.parse_args()
   bench_fn = BENCH_FN[args.system]
+  model_cfg = MODEL_CFGS[args.model]
+  model_cfg.dtype = args.dtype
+  model_cfg.device = args.device
 
-  model_cfg = ModelConfig(
-      num_layers=32,
-      num_heads=32,
-      hidden_size=4096,
-      intermediate_size=11008,
-      dtype="float16",
-      device="cuda:0",
-  )
-  rs = generate_request_set(num_requests=50, maxlen=2048)
-  textgen_cfg = TextGenConfig(batch_size=16)
+  rs = generate_request_set(
+      num_requests=args.batch_size * args.num_batches, maxlen=args.maxlen)
+  textgen_cfg = TextGenConfig(batch_size=args.batch_size)
   res = bench_fn(model_cfg, textgen_cfg, rs)
 
   t = res.encode_latency / rs.prompt_lens
@@ -495,4 +517,4 @@ def main():
 
 
 if __name__ == "__main__":
-  main()
+  bench_one()
