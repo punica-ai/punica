@@ -285,6 +285,72 @@ def textgen_ds_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
 
 
 @torch.inference_mode()
+def textgen_ft_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
+                   rs: RequestSet) -> TextGenBenchResult:
+  from .fastertransformer import build_ext
+  ft = build_ext()
+  rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  model = ft.FtLlama(
+      num_heads=model_cfg.num_heads,
+      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      inter_size=model_cfg.intermediate_size,
+      num_layers=model_cfg.num_layers,
+      dtype=model_cfg.dtype,
+      device_id=torch.device(model_cfg.device).index,
+  )
+
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="ft_pad")
+  encode_latency = []
+  decode_latency = []
+  t_start = time.perf_counter()
+  for req_indicies in batched(range(len(rs)), textgen_cfg.batch_size):
+    bs = len(req_indicies)
+
+    # Decode Callback
+    outlens = [0] * bs
+    dl = [None] * bs
+    t_decode_start = None
+
+    def decode_cb():
+      nonlocal t_decode_start
+      t3 = time.perf_counter()
+      if t_decode_start is None:
+        t_decode_start = t3
+        pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))
+
+      for i in range(bs):
+        target_len = rs.output_lens[req_indicies[i]]
+        if outlens[i] < target_len:
+          outlens[i] += 1
+          pbar.update()
+          if outlens[i] == target_len:
+            dl[i] = t3 - t_decode_start
+
+    # Encode and decode all
+    input_ids = [
+        rng.integers(0, 32000, (rs.prompt_lens[idx],), dtype=int).tolist()
+        for idx in req_indicies
+    ]
+    max_output_lens = max(rs.output_lens[idx] for idx in req_indicies)
+    t0 = time.perf_counter()
+    model.forward(input_ids, max_output_lens, decode_cb)
+    for _ in range(len(req_indicies)):
+      encode_latency.append(t_decode_start - t0)
+    decode_latency.extend(dl)
+  t_end = time.perf_counter()
+  pbar.close()
+
+  return TextGenBenchResult(
+      encode_latency=np.array(encode_latency),
+      decode_latency=np.array(decode_latency),
+      duration=t_end - t_start,
+  )
+
+
+@torch.inference_mode()
 def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                  rs: RequestSet) -> TextGenBenchResult:
   import vllm.transformers_utils.config
@@ -390,6 +456,7 @@ def main():
       "punica": textgen_punica,
       "hf_pad": textgen_hf_pad,
       "ds_pad": textgen_ds_pad,
+      "ft_pad": textgen_ft_pad,
       "vllm": textgen_vllm,
   }
   parser = argparse.ArgumentParser()
