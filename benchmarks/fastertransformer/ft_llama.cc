@@ -36,6 +36,7 @@ struct ModelConfig {
     size_t head_dim;
     size_t inter_size;
     size_t num_layers;
+    int    device_id;
 };
 
 template<typename T>
@@ -45,7 +46,9 @@ public:
     ~FtLlamaImpl();
     FtLlamaImpl(const FtLlamaImpl&) = delete;
     FtLlamaImpl& operator=(const FtLlamaImpl&) = delete;
-    void         forward(const std::vector<std::vector<int>>& input_ids, size_t request_output_len);
+
+    void
+    forward(const std::vector<std::vector<int>>& input_ids, size_t request_output_len, std::function<void()> callback);
 
 private:
     const int    start_id                   = 0;
@@ -75,13 +78,19 @@ private:
     LlamaWeight<T>*                 gpt_weights;
 };
 
-FtLlama::FtLlama(size_t num_heads, size_t head_dim, size_t inter_size, size_t num_layers, const char* data_type)
+struct CallbackContext {
+    std::function<void()> callback;
+};
+
+FtLlama::FtLlama(
+    size_t num_heads, size_t head_dim, size_t inter_size, size_t num_layers, const char* data_type, int device_id)
 {
     ModelConfig config = {
         .num_heads  = num_heads,
         .head_dim   = head_dim,
         .inter_size = inter_size,
         .num_layers = num_layers,
+        .device_id  = device_id,
     };
     if (strcmp(data_type, "float32") == 0) {
         dtype_ = DataType::FP32;
@@ -114,35 +123,23 @@ FtLlama::~FtLlama()
 #endif
 }
 
-void FtLlama::forward(const std::vector<std::vector<int>>& input_ids, size_t request_output_len)
+void FtLlama::forward(const std::vector<std::vector<int>>& input_ids,
+                      size_t                               request_output_len,
+                      std::function<void()>                callback)
 {
     if (dtype_ == DataType::FP32) {
-        static_cast<FtLlamaImpl<float>*>(impl_)->forward(input_ids, request_output_len);
+        static_cast<FtLlamaImpl<float>*>(impl_)->forward(input_ids, request_output_len, std::move(callback));
     }
     else if (dtype_ == DataType::FP16) {
-        static_cast<FtLlamaImpl<half>*>(impl_)->forward(input_ids, request_output_len);
+        static_cast<FtLlamaImpl<half>*>(impl_)->forward(input_ids, request_output_len, std::move(callback));
     }
 #ifdef ENABLE_BF16
     else if (dtype_ == DataType::BF16) {
-        static_cast<FtLlamaImpl<__nv_bfloat16>*>(impl_)->forward(input_ids, request_output_len);
+        static_cast<FtLlamaImpl<__nv_bfloat16>*>(impl_)->forward(input_ids, request_output_len, std::move(callback));
     }
 #endif
 }
 
-void on_llama_callback(std::unordered_map<std::string, Tensor>* out, void* cb_ctx)
-{
-    printf("on_llama_callback\n");
-    for (const auto& kv : *out) {
-        const std::string& k = kv.first;
-        const Tensor&      v = kv.second;
-        printf("  %s: %s\n", k.c_str(), v.toString().c_str());
-        if (k == "sequence_length") {
-            std::vector<int32_t> x(v.size());
-            cudaD2Hcpy(x.data(), static_cast<const int32_t*>(v.data), v.size());
-            printf("    %s\n", vec2str(x).c_str());
-        }
-    }
-}
 template<typename T>
 FtLlamaImpl<T>::FtLlamaImpl(ModelConfig config)
 {
@@ -172,12 +169,10 @@ FtLlamaImpl<T>::FtLlamaImpl(ModelConfig config)
 
     // Prepare the parallelism parameters
     int device;
-    check_cuda_error(cudaSetDevice(0));
+    check_cuda_error(cudaSetDevice(config.device_id));
     check_cuda_error(cudaGetDevice(&device));
     struct cudaDeviceProp prop;
     check_cuda_error(cudaGetDeviceProperties(&prop, device));
-    printf("Device %s\n", prop.name);
-    printf("Running with GPU #%d.\n", device);
     const int layers_per_group = decoder_layers / pipeline_para_size;
 
     cudaStreamCreate(&stream);
@@ -255,7 +250,6 @@ FtLlamaImpl<T>::FtLlamaImpl(ModelConfig config)
                        0,
                        1.0f);
     unsetenv("LLAMA_STREAM_CB_STEP");
-    gpt->registerCallback(&on_llama_callback, nullptr);
 }
 
 void flat_pad_input_ids(const std::vector<std::vector<int>>& input_ids,
@@ -280,8 +274,20 @@ void flat_pad_input_ids(const std::vector<std::vector<int>>& input_ids,
 }
 
 template<typename T>
-void FtLlamaImpl<T>::forward(const std::vector<std::vector<int>>& input_ids, size_t request_output_len)
+void FtLlamaImpl<T>::forward(const std::vector<std::vector<int>>& input_ids,
+                             size_t                               request_output_len,
+                             std::function<void()>                callback)
 {
+    CallbackContext ctx = {std::move(callback)};
+    if (ctx.callback) {
+        gpt->registerCallback(
+            [](std::unordered_map<std::string, Tensor>* _out, void* cb_ctx) {
+                auto* ctx = static_cast<CallbackContext*>(cb_ctx);
+                ctx->callback();
+            },
+            &ctx);
+    }
+
     // Read ids of request from args.
     size_t           max_input_len;
     size_t           total_outout_len;
@@ -367,43 +373,9 @@ void FtLlamaImpl<T>::forward(const std::vector<std::vector<int>>& input_ids, siz
                 std::vector<size_t>{request_batch_size, (size_t)request_output_len, beam_width},
                 nullptr}}};
 
-    cudaDeviceSynchronize();
     gpt->forward(&output_tensors, &input_tensors, gpt_weights);
-    cudaDeviceSynchronize();
-
-    std::string fName   = "out";
-    auto        outFile = std::ofstream(fName, std::ios::out);
-    if (!outFile.is_open()) {
-        printf("[WARNING] Cannot write results into output file %s \n", fName.c_str());
-    }
-    else {
-        size_t outCount = total_output_len * request_batch_size * beam_width;
-        int*   hBuf     = new int[outCount];
-
-        cudaD2Hcpy(hBuf, d_output_ids, outCount);
-
-        {
-            std::cout << "Writing " << outCount << " elements\n";
-            int zeroCount = 0;
-            for (size_t i = 0; i < outCount; i++) {
-                if (hBuf[i] == int(0)) {
-                    zeroCount++;
-                }
-                outFile << hBuf[i] << " ";
-                if ((i + 1) % (total_output_len) == 0) {
-                    outFile << std::endl;
-                }
-
-                if (i < 10) {
-                    printf("%5d ", hBuf[i]);
-                }
-                if ((i + 1) % (total_output_len) == 0 && i < 10) {
-                    std::cout << std::endl;
-                }
-            }
-            std::cout << std::endl << "zeroCount = " << zeroCount << std::endl;
-        }
-        delete[] hBuf;
+    if (ctx.callback) {
+        ctx.callback();
     }
 
     if (d_input_ids != nullptr) {
@@ -418,6 +390,7 @@ void FtLlamaImpl<T>::forward(const std::vector<std::vector<int>>& input_ids, siz
     if (d_sequence_lengths != nullptr) {
         deviceFree(d_sequence_lengths);
     }
+    gpt->unRegisterCallback();
 }
 
 template<typename T>

@@ -1,33 +1,23 @@
 #include "ft_llama.h"
+#include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
-namespace {
-void run()
-{
-    srand(0);
-    const char* data_type = "float16";
-
-    FtLlama llama(32,     // num_heads
-                  128,    // head_dim
-                  11008,  // inter_size
-                  32,     // num_layers
-                  data_type);
-
-    std::vector<std::vector<int>> input_ids = {
-        {0, 37, 92, 26, 66, 36, 55, 70, 73, 15, 36, 51, 34, 52, 29},
-        {0, 37, 92, 70, 73, 15, 66, 93, 34, 52, 99},
-        {0, 92, 16, 66, 16, 45, 70, 93, 11, 36, 53, 30, 52, 29},
-        {0, 37, 92, 26, 66, 36, 55, 70, 23, 23},
-        {0, 37, 92, 26, 66, 36, 55, 70, 29, 15, 34, 52, 23},
-        {0, 73},
-        {0, 37, 92, 15, 66, 93, 34, 52, 23},
-        {0, 70, 73, 15, 66, 93, 30, 92, 29},
-    };
-    llama.forward(input_ids, 10);
-}
-}  // namespace
+namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("run", &run);
+    py::class_<FtLlama>(m, "FtLlama")
+        .def(py::init<size_t, size_t, size_t, size_t, const char*, int>(),
+             py::arg("num_heads"),
+             py::arg("head_dim"),
+             py::arg("inter_size"),
+             py::arg("num_layers"),
+             py::arg("dtype"),
+             py::arg("device_id") = 0)
+        .def("forward",
+             &FtLlama::forward,
+             py::arg("input_ids"),
+             py::arg("request_output_len"),
+             py::arg("callback") = nullptr);
 }
