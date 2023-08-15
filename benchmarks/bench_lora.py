@@ -162,8 +162,120 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   )
 
 
+def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+                          textgen_cfg: TextGenConfig, rs: RequestSet,
+                          use_deepspeed: bool) -> TextGenBenchResult:
+  import peft
+  from transformers import LlamaConfig, LlamaForCausalLM
+
+  if textgen_cfg.batch_size != 1:
+    raise ValueError("batch_size must be 1.")
+
+  torch.manual_seed(0xabcdabcd987)
+  device = torch.device(model_cfg.device)
+  dtype = getattr(torch, model_cfg.dtype)
+  default_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  with device:
+    model = LlamaForCausalLM(
+        LlamaConfig(
+            hidden_size=model_cfg.hidden_size,
+            num_attention_heads=model_cfg.num_heads,
+            intermediate_size=model_cfg.intermediate_size,
+            num_hidden_layers=model_cfg.num_layers,
+        )).to(device)
+    model = peft.get_peft_model(
+        model,
+        peft.LoraConfig(
+            task_type=peft.TaskType.CAUSAL_LM,
+            inference_mode=True,
+            r=lora_cfg.rank,
+            lora_alpha=lora_cfg.alpha,
+            lora_dropout=0.0,
+            bias="none",
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj",
+                "down_proj"
+            ]))
+  torch.set_default_dtype(default_dtype)
+
+  if use_deepspeed:
+    import deepspeed
+    ds_engine = deepspeed.init_inference(
+        model=model, max_out_tokens=2048, replace_with_kernel_inject=True)
+    model = ds_engine.module
+
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="hf_bs1" if not use_deepspeed else "ds_bs1")
+  model_kwargs = dict(
+      use_cache=True,
+      output_attentions=False,
+      output_hidden_states=False,
+      return_dict=True,
+  )
+  encode_latency = []
+  decode_latency = []
+  t_start = time.perf_counter()
+  for idx in range(len(rs)):
+    # Encode
+    input_ids = [
+        torch.randint(
+            0, 32000, (rs.prompt_lens[idx],), dtype=torch.long, device=device)
+    ]
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids, batch_first=True, padding_value=0.0)
+    t0 = time.perf_counter()
+    ret = model(input_ids=input_ids, **model_kwargs)
+    past_key_values = ret.past_key_values
+    input_ids = torch.argmax(ret.logits[:, -1, :], dim=-1, keepdim=True)
+    outputs = [input_ids.cpu().item()]
+    t1 = time.perf_counter()
+    pbar.update(rs.prompt_lens[idx] + 1)
+    encode_latency.append(t1 - t0)
+
+    # Decode
+    t2 = time.perf_counter()
+    for _ in range(rs.output_lens[idx] - 1):
+      ret = model(
+          input_ids=input_ids, past_key_values=past_key_values, **model_kwargs)
+      past_key_values = ret.past_key_values
+      input_ids = torch.argmax(ret.logits, dim=-1)
+      next_token = input_ids.cpu().item()
+      outputs.append(next_token)
+      pbar.update()
+    decode_latency.append(time.perf_counter() - t2)
+  t_end = time.perf_counter()
+  pbar.close()
+
+  return TextGenBenchResult(
+      encode_latency=np.array(encode_latency),
+      decode_latency=np.array(decode_latency),
+      duration=t_end - t_start,
+  )
+
+
+@torch.inference_mode()
+def lora_hf_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+                textgen_cfg: TextGenConfig,
+                rs: RequestSet) -> TextGenBenchResult:
+  return _lora_hf_bs1_internal(
+      model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=False)
+
+
+@torch.inference_mode()
+def lora_ds_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+                textgen_cfg: TextGenConfig,
+                rs: RequestSet) -> TextGenBenchResult:
+  return _lora_hf_bs1_internal(
+      model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=True)
+
+
 BENCH_FN = {
     "punica": lora_punica,
+    "hf_bs1": lora_hf_bs1,
+    "ds_bs1": lora_ds_bs1,
 }
 
 MODEL_CFGS = {
@@ -189,8 +301,8 @@ def bench_one():
   parser.add_argument("--system", choices=BENCH_FN.keys(), default="punica")
   parser.add_argument("--model", choices=MODEL_CFGS.keys(), default="7b")
   parser.add_argument("--lora-rank", type=int, default=16)
-  parser.add_argument("--batch_size", type=int, default=16)
-  parser.add_argument("--num_batches", type=int, default=10)
+  parser.add_argument("--batch-size", type=int, default=16)
+  parser.add_argument("--num-batches", type=int, default=10)
   parser.add_argument("--maxlen", type=int, default=2048)
   parser.add_argument(
       "--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
