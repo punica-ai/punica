@@ -11,6 +11,10 @@ extern "C" void launch_rotary_mha_decode_64_float16_kernel(void* __restrict__ K_
 extern "C" void launch_rotary_mha_decode_80_float16_kernel(void* __restrict__ K_proj, void* __restrict__ O, void* __restrict__ Q_proj, void* __restrict__ V_proj, void* __restrict__ kvbuf, void* __restrict__ kvidx, void* __restrict__ past_len, int64_t B, int64_t H, int64_t L, int64_t MAXLEN, int64_t layer_idx, int64_t nnz);
 extern "C" void launch_rotary_mha_decode_96_float16_kernel(void* __restrict__ K_proj, void* __restrict__ O, void* __restrict__ Q_proj, void* __restrict__ V_proj, void* __restrict__ kvbuf, void* __restrict__ kvidx, void* __restrict__ past_len, int64_t B, int64_t H, int64_t L, int64_t MAXLEN, int64_t layer_idx, int64_t nnz);
 extern "C" void launch_rotary_mha_decode_128_float16_kernel(void* __restrict__ K_proj, void* __restrict__ O, void* __restrict__ Q_proj, void* __restrict__ V_proj, void* __restrict__ kvbuf, void* __restrict__ kvidx, void* __restrict__ past_len, int64_t B, int64_t H, int64_t L, int64_t MAXLEN, int64_t layer_idx, int64_t nnz);
+extern "C" void launch_bggemv_4096_16_float16_kernel(void* __restrict__ I, void* __restrict__ W, void* __restrict__ X, void* __restrict__ Y, int64_t B, int64_t layer_idx, int64_t num_layers, int64_t num_loras);
+extern "C" void launch_bggemv_16_4096_float16_kernel(void* __restrict__ I, void* __restrict__ W, void* __restrict__ X, void* __restrict__ Y, int64_t B, int64_t layer_idx, int64_t num_layers, int64_t num_loras);
+extern "C" void launch_bggemv_16_11008_float16_kernel(void* __restrict__ I, void* __restrict__ W, void* __restrict__ X, void* __restrict__ Y, int64_t B, int64_t layer_idx, int64_t num_layers, int64_t num_loras);
+extern "C" void launch_bggemv_11008_16_float16_kernel(void* __restrict__ I, void* __restrict__ W, void* __restrict__ X, void* __restrict__ Y, int64_t B, int64_t layer_idx, int64_t num_layers, int64_t num_loras);
 
 #define ITER_rotary_mha_decode_kvconst(f) \
   f(rotary_mha_decode_kvconst_12_64_12_2048_float16) \
@@ -45,3 +49,17 @@ extern "C" void launch_rotary_mha_decode_128_float16_kernel(void* __restrict__ K
   f(80, float16) \
   f(96, float16) \
   f(128, float16) \
+
+#define ITER_bggemv(f) \
+  f(bggemv_4096_16_float16) \
+  f(bggemv_16_4096_float16) \
+  f(bggemv_16_11008_float16) \
+  f(bggemv_11008_16_float16) \
+
+#define ARGS_bggemv(f) \
+  f(4096, 16, float16) \
+  f(16, 4096, float16) \
+  f(16, 11008, float16) \
+  f(11008, 16, float16) \
+
+// EOF

@@ -14,7 +14,7 @@ def rotary_mha_decode(
     kvbuf: torch.Tensor,
     kvidx: torch.LongTensor,
     layer_idx: int,
-):
+) -> torch.Tensor:
   """
   Semantics of `rotary_mha_decode`:
   For each input in the batch:
@@ -66,3 +66,36 @@ def rotary_mha_decode(
   o = torch.empty(q_proj.shape, dtype=dtype, device=device)
   f(q_proj, k_proj, v_proj, o, past_lens, kvbuf, kvidx, layer_idx)
   return o
+
+
+def add_lora(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    wa_all: torch.Tensor,
+    wb_all: torch.Tensor,
+    indicies: torch.LongTensor,
+    layer_idx: int,
+):
+  """
+  Semantics:
+    y[i] += (x[i] @ wa_all[indices[i], layer_idx, :, :]
+                  @ wb_all[indices[i], layer_idx, :, :])
+
+  Args:
+    x: Shape: `[B, H1]`. Input vectors.
+    y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+    wa_all: Shape: `[None, L, H1, R]`. All of the LoRA A matrices.
+    wb_all: Shape: `[None, L, R, H2]`. All of the LoRA B matrices.
+    indicies: Shape: `[B]`. Indices of the LoRA weights.
+    layer_idx: Layer index of LoRA weights.
+  """
+  f = punica.ops._kernels.dispatch_bggemv
+  device = x.device
+  dtype = x.dtype
+  if dtype != torch.float16:
+    raise ValueError(f"Unsupported dtype: {dtype}")
+
+  r = wa_all.size(-1)
+  tmp = torch.zeros((x.size(0), r), dtype=dtype, device=device)
+  f(x, wa_all, indicies, tmp, layer_idx)
+  f(tmp, wb_all, indicies, y, layer_idx)
