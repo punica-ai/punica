@@ -1,6 +1,15 @@
+import pytest
 import torch
 
 import punica.ops
+
+
+def assert_close(a, b):
+  rtol, atol = {
+      torch.float16: (5e-3, 5e-3),
+      torch.bfloat16: (3e-2, 2e-2),
+  }[a.dtype]
+  torch.testing.assert_close(a, b, rtol=rtol, atol=atol)
 
 
 def _lora_ref_impl(
@@ -23,8 +32,9 @@ def _lora_ref_impl(
     y[i] += (tmp @ wb).squeeze(0) * s
 
 
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
 @torch.inference_mode()
-def test_lora_correctness():
+def test_lora_correctness(dtype_str):
   torch.manual_seed(0xabcdabcd987)
   num_loras = 4
   num_layers = 5
@@ -33,7 +43,7 @@ def test_lora_correctness():
   r = 8
   bs = 32
   scale = 0.123
-  dtype = torch.float16
+  dtype = getattr(torch, dtype_str)
   device = torch.device("cuda:0")
 
   wa_T_all = torch.randn(
@@ -51,4 +61,4 @@ def test_lora_correctness():
     y_our = y.clone()
     punica.ops.add_lora(y_our, x, wa_T_all, wb_T_all, indices, layer_idx, scale)
 
-    torch.testing.assert_close(y_ref, y_our, rtol=5e-3, atol=5e-3)
+    assert_close(y_ref, y_our)
