@@ -39,12 +39,14 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   torch.set_default_dtype(dtype)
   with device:
     model = LlamaForCausalLMWithLora(
-        LlamaConfig(
+        config=LlamaConfig(
             hidden_size=model_cfg.hidden_size,
             num_attention_heads=model_cfg.num_heads,
             intermediate_size=model_cfg.intermediate_size,
             num_hidden_layers=model_cfg.num_layers,
-        )).to(device)
+        ),
+        lora_scale=1.0,
+    ).to(device)
   torch.set_default_dtype(default_dtype)
 
   kvpool = KvPool(
@@ -65,8 +67,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       device=device,
   )
   for mgr in [lora_mgr.mgr_hh, lora_mgr.mgr_hi, lora_mgr.mgr_ih]:
-    mgr._wa.copy_(torch.randn_like(mgr._wa))
-    mgr._wb.copy_(torch.randn_like(mgr._wb))
+    mgr._wa_T.copy_(torch.randn_like(mgr._wa_T))
+    mgr._wb_T.copy_(torch.randn_like(mgr._wb_T))
   lora_models = [lora_mgr.alloc() for _ in range(textgen_cfg.batch_size)]
 
   @dataclasses.dataclass

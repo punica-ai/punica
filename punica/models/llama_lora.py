@@ -35,13 +35,14 @@ def rotary_pos_emb(q, k, beg):
 
 class LlamaAttentionWithLora(nn.Module):
 
-  def __init__(self, config: LlamaConfig, layer_idx: int):
+  def __init__(self, config: LlamaConfig, lora_scale: float, layer_idx: int):
     super().__init__()
     self.config = config
     self.hidden_size = config.hidden_size
     self.num_heads = config.num_attention_heads
     self.head_dim = self.hidden_size // self.num_heads
     self._scale = 1 / math.sqrt(self.head_dim)
+    self.lora_scale = lora_scale
     self.layer_idx = layer_idx
 
     if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -74,12 +75,12 @@ class LlamaAttentionWithLora(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("lora_qkv")
-    add_lora(hidden_states.cat, q_proj, lora.q.mgr.wa, lora.q.mgr.wb,
-             lora.q.indicies, self.layer_idx)
-    add_lora(hidden_states.cat, k_proj, lora.k.mgr.wa, lora.k.mgr.wb,
-             lora.k.indicies, self.layer_idx)
-    add_lora(hidden_states.cat, v_proj, lora.v.mgr.wa, lora.v.mgr.wb,
-             lora.v.indicies, self.layer_idx)
+    add_lora(q_proj, hidden_states.cat, lora.q.mgr.wa_T, lora.q.mgr.wb_T,
+             lora.q.indicies, self.layer_idx, self.lora_scale)
+    add_lora(k_proj, hidden_states.cat, lora.k.mgr.wa_T, lora.k.mgr.wb_T,
+             lora.k.indicies, self.layer_idx, self.lora_scale)
+    add_lora(v_proj, hidden_states.cat, lora.v.mgr.wa_T, lora.v.mgr.wb_T,
+             lora.v.indicies, self.layer_idx, self.lora_scale)
     torch.cuda.nvtx.range_pop()
 
     if past_lens[0] == 0:
@@ -149,8 +150,8 @@ class LlamaAttentionWithLora(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("lora_o")
-    add_lora(attn_outputs, o_proj, lora.o.mgr.wa, lora.o.mgr.wb,
-             lora.o.indicies, self.layer_idx)
+    add_lora(o_proj, attn_outputs, lora.o.mgr.wa_T, lora.o.mgr.wb_T,
+             lora.o.indicies, self.layer_idx, self.lora_scale)
     torch.cuda.nvtx.range_pop()
 
     o_proj = CatTensor(o_proj, lens)
@@ -159,8 +160,9 @@ class LlamaAttentionWithLora(nn.Module):
 
 class LlamaMlpWithLora(nn.Module):
 
-  def __init__(self, config: LlamaConfig, layer_idx: int):
+  def __init__(self, config: LlamaConfig, lora_scale: float, layer_idx: int):
     super().__init__()
+    self.lora_scale = lora_scale
     self.layer_idx = layer_idx
     hidden_size = config.hidden_size
     intermediate_size = config.intermediate_size
@@ -179,8 +181,8 @@ class LlamaMlpWithLora(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("lora_gate")
-    add_lora(x, gate, lora.gate.mgr.wa, lora.gate.mgr.wb, lora.gate.indicies,
-             self.layer_idx)
+    add_lora(gate, x, lora.gate.mgr.wa_T, lora.gate.mgr.wb_T,
+             lora.gate.indicies, self.layer_idx, self.lora_scale)
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("gate_act")
@@ -192,8 +194,8 @@ class LlamaMlpWithLora(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("lora_up")
-    add_lora(x, up, lora.up.mgr.wa, lora.up.mgr.wb, lora.up.indicies,
-             self.layer_idx)
+    add_lora(up, x, lora.up.mgr.wa_T, lora.up.mgr.wb_T, lora.up.indicies,
+             self.layer_idx, self.lora_scale)
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("gate_up")
@@ -205,19 +207,19 @@ class LlamaMlpWithLora(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("lora_down")
-    add_lora(t, down, lora.down.mgr.wa, lora.down.mgr.wb, lora.down.indicies,
-             self.layer_idx)
+    add_lora(down, t, lora.down.mgr.wa_T, lora.down.mgr.wb_T,
+             lora.down.indicies, self.layer_idx, self.lora_scale)
     torch.cuda.nvtx.range_pop()
     return down
 
 
 class LlamaDecoderLayerWithLora(nn.Module):
 
-  def __init__(self, config: LlamaConfig, layer_idx: int):
+  def __init__(self, config: LlamaConfig, lora_scale: float, layer_idx: int):
     super().__init__()
     self.hidden_size = config.hidden_size
-    self.self_attn = LlamaAttentionWithLora(config=config, layer_idx=layer_idx)
-    self.mlp = LlamaMlpWithLora(config, layer_idx=layer_idx)
+    self.self_attn = LlamaAttentionWithLora(config, lora_scale, layer_idx)
+    self.mlp = LlamaMlpWithLora(config, lora_scale, layer_idx)
     self.input_layernorm = LlamaRMSNorm(
         config.hidden_size, eps=config.rms_norm_eps)
     self.post_attention_layernorm = LlamaRMSNorm(
@@ -279,14 +281,14 @@ class LlamaPreTrainedModel(PreTrainedModel):
 
 class LlamaModelWithLora(LlamaPreTrainedModel):
 
-  def __init__(self, config: LlamaConfig):
+  def __init__(self, config: LlamaConfig, lora_scale: float):
     super().__init__(config)
     self.padding_idx = config.pad_token_id
     self.vocab_size = config.vocab_size
     self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size,
                                      self.padding_idx)
     self.layers = nn.ModuleList([
-        LlamaDecoderLayerWithLora(config, layer_idx=i)
+        LlamaDecoderLayerWithLora(config, lora_scale, layer_idx=i)
         for i in range(config.num_hidden_layers)
     ])
     self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -321,9 +323,9 @@ class LlamaModelWithLora(LlamaPreTrainedModel):
 
 class LlamaForCausalLMWithLora(LlamaPreTrainedModel):
 
-  def __init__(self, config: LlamaConfig):
+  def __init__(self, config: LlamaConfig, lora_scale: float):
     super().__init__(config)
-    self.model = LlamaModelWithLora(config)
+    self.model = LlamaModelWithLora(config, lora_scale)
     self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
     self.post_init()
 

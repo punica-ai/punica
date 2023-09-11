@@ -1,19 +1,28 @@
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <torch/extension.h>
 
+#include <cstdint>
+
+#include "bgmv/bgmv_config.h"
 #include "gen/punica_ops.cc.inc"
 
 namespace {
 
 //====== utils ======
 
-inline void check_shape(const torch::Tensor &a, const torch::Tensor &b,
-                        const char *a_name, const char *b_name) {
+inline void check_shape(const torch::Tensor& a, const torch::Tensor& b,
+                        const char* a_name, const char* b_name) {
   TORCH_CHECK(a.dim() == b.dim(), a_name, ".dim() != ", b_name, ".dim(). ",
               a.dim(), " vs ", b.dim());
   for (int i = 0; i < a.dim(); ++i) {
     TORCH_CHECK(a.size(i) == b.size(i), a_name, ".size(", i, ") != ", b_name,
                 ".size(", i, ")");
   }
+}
+
+inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
+  return (uint32_t(a) << 16) | uint32_t(b);
 }
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
@@ -142,55 +151,78 @@ void dispatch_rotary_mha_decode(torch::Tensor q_proj, torch::Tensor k_proj,
 ITER_rotary_mha_decode_kvconst(DEFINE_rotary_mha_decode_kvconst);
 ITER_rotary_mha_decode(DEFINE_rotary_mha_decode);
 
-//====== bggemv ======
+//====== bgmv ======
 
-template <typename F>
-inline void bggemv(F kernel, torch::Tensor x, torch::Tensor w,
-                   torch::Tensor indicies, torch::Tensor y, int64_t layer_idx) {
-  int64_t B = x.size(0);
-  int64_t num_loras = w.size(0);
-  int64_t num_layers = w.size(1);
-  kernel(indicies.data_ptr(), w.data_ptr(), x.data_ptr(), y.data_ptr(), B,
-         layer_idx, num_layers, num_loras);
-}
+template <typename T>
+inline bool launch_bgmv_kernel(T* Y, const T* X, const T* W,
+                               const int64_t* lora_indices,
+                               uint16_t in_features, uint16_t out_features,
+                               int64_t batch_size, int64_t num_layers,
+                               int64_t layer_idx, float scale) {
+  switch (pack_u16(in_features, out_features)) {
+#define CASE_ONESIDE(_T, feat_in, feat_out)                           \
+  case pack_u16(feat_in, feat_out):                                   \
+    bgmv_kernel<feat_in, feat_out>(Y, X, W, lora_indices, batch_size, \
+                                   num_layers, layer_idx, scale);     \
+    break;
+#define CASE(_T, narrow, wide)  \
+  CASE_ONESIDE(T, narrow, wide) \
+  CASE_ONESIDE(T, wide, narrow)
 
-#define DEFINE_bggemv(name)                                           \
-  void name(torch::Tensor x, torch::Tensor w, torch::Tensor indicies, \
-            torch::Tensor y, int64_t layer_idx) {                     \
-    bggemv(launch_##name##_kernel, x, w, indicies, y, layer_idx);     \
+    FOR_BGMV_WIDE_NARROW(CASE, _)
+#undef CASE
+#undef CASE_ONESIDE
+    default:
+      return false;
   }
 
-void dispatch_bggemv(torch::Tensor x, torch::Tensor w, torch::Tensor indicies,
-                     torch::Tensor y, int64_t layer_idx) {
+  return true;
+}
+
+void dispatch_bgmv(torch::Tensor y, torch::Tensor x, torch::Tensor w,
+                   torch::Tensor indicies, int64_t layer_idx, float scale) {
+  CHECK_INPUT(y);
   CHECK_INPUT(x);
   CHECK_INPUT(w);
   CHECK_INPUT(indicies);
-  CHECK_INPUT(y);
 
+  CHECK_DIM(2, y);
   CHECK_DIM(2, x);
   CHECK_DIM(4, w);
   CHECK_DIM(1, indicies);
-  CHECK_DIM(2, y);
 
+  int64_t B = x.size(0);
   int64_t h_in = x.size(1);
   int64_t h_out = y.size(1);
-  CHECK_EQ(w.size(2), h_in);
-  CHECK_EQ(w.size(3), h_out);
+  int64_t num_layers = w.size(1);
+  CHECK_EQ(w.size(3), h_in);
+  CHECK_EQ(w.size(2), h_out);
   CHECK_EQ(indicies.size(0), x.size(0));
   CHECK_EQ(y.size(0), x.size(0));
-
-#define DISPATCH(hi, ho, dtype)                                       \
-  if (h_in == hi && h_out == ho) {                                    \
-    return bggemv(launch_bggemv_##hi##_##ho##_##dtype##_kernel, x, w, \
-                  indicies, y, layer_idx);                            \
+  bool ok = false;
+  if (h_in < 65536 && h_out < 65536) {
+    switch (x.scalar_type()) {
+      case at::ScalarType::Half:
+        ok = launch_bgmv_kernel(static_cast<nv_half*>(y.data_ptr()),
+                                static_cast<nv_half*>(x.data_ptr()),
+                                static_cast<nv_half*>(w.data_ptr()),
+                                indicies.data_ptr<int64_t>(), h_in, h_out, B,
+                                num_layers, layer_idx, scale);
+        break;
+      case at::ScalarType::BFloat16:
+        ok = launch_bgmv_kernel(static_cast<nv_bfloat16*>(y.data_ptr()),
+                                static_cast<nv_bfloat16*>(x.data_ptr()),
+                                static_cast<nv_bfloat16*>(w.data_ptr()),
+                                indicies.data_ptr<int64_t>(), h_in, h_out, B,
+                                num_layers, layer_idx, scale);
+        break;
+      default:
+        break;
+    }
   }
-  ARGS_bggemv(DISPATCH);
-#undef DISPATCH
-
-  TORCH_CHECK(false, "No suitable kernel.", " h_in=", h_in, " h_out=", h_out);
+  TORCH_CHECK(ok, "No suitable kernel.", " h_in=", h_in, " h_out=", h_out,
+              " dtype=", x.scalar_type());
 }
-
-ITER_bggemv(DEFINE_bggemv);
 
 }  // namespace
 
@@ -204,6 +236,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("dispatch_rotary_mha_decode", &dispatch_rotary_mha_decode,
         "dispatch_rotary_mha_decode");
 
-  ITER_bggemv(DEFINE_pybind);
-  m.def("dispatch_bggemv", &dispatch_bggemv, "dispatch_bggemv");
+  m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
 }

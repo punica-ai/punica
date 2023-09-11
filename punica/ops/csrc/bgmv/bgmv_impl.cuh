@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cooperative_groups.h>
 #include <cuda_runtime.h>
 
@@ -10,9 +12,10 @@ namespace cg = cooperative_groups;
 
 // nthrs = (32, 4)
 template <int feat_in, int feat_out, typename T>
-__global__ void bgmv_shrink_kernel(const T* __restrict__ W,
-                                   const T* __restrict__ X, T* __restrict__ Y,
-                                   const int64_t* __restrict__ lora_indices,
+__global__ void bgmv_shrink_kernel(T* __restrict__ Y, const T* __restrict__ X,
+                                   const T* __restrict__ W,
+                                   const int64_t* __restrict__ indicies,
+                                   int64_t num_layers, int64_t layer_idx,
                                    float scale) {
   auto block = cg::this_thread_block();
   size_t j = blockIdx.x;
@@ -26,7 +29,7 @@ __global__ void bgmv_shrink_kernel(const T* __restrict__ W,
   __shared__ T X_shared[num_pipeline_stages * tile_size];
   __shared__ float y_warpwise[ty];
 
-  int64_t lora_idx = lora_indices[batch_idx];
+  int64_t idx = indicies[batch_idx] * num_layers + layer_idx;
 
   size_t W_shared_offset[num_pipeline_stages] = {0U, 1U * tile_size};
   size_t X_shared_offset[num_pipeline_stages] = {0U, 1U * tile_size};
@@ -35,7 +38,7 @@ __global__ void bgmv_shrink_kernel(const T* __restrict__ W,
   // pipeline load W/X and compute WX;
   pipe.producer_acquire();
   cuda::memcpy_async(W_shared + (threadIdx.y * tx + threadIdx.x) * vec_size,
-                     W + (lora_idx * feat_out + j) * feat_in +
+                     W + (idx * feat_out + j) * feat_in +
                          (threadIdx.y * tx + threadIdx.x) * vec_size,
                      cuda::aligned_size_t<16>(16), pipe);
   cuda::memcpy_async(
@@ -57,7 +60,7 @@ __global__ void bgmv_shrink_kernel(const T* __restrict__ W,
     if (tile_idx * tile_size + threadIdx.y * tx * vec_size < feat_in) {
       cuda::memcpy_async(W_shared + W_shared_offset[copy_idx] +
                              (threadIdx.y * tx + threadIdx.x) * vec_size,
-                         W + (lora_idx * feat_out + j) * feat_in +
+                         W + (idx * feat_out + j) * feat_in +
                              tile_idx * tile_size +
                              (threadIdx.y * tx + threadIdx.x) * vec_size,
                          cuda::aligned_size_t<16>(16), pipe);
@@ -135,9 +138,10 @@ __global__ void bgmv_shrink_kernel(const T* __restrict__ W,
 
 // nthrs = (2, 16, 4)
 template <int feat_in, int feat_out, typename T>
-__global__ void bgmv_expand_kernel(const T* __restrict__ X,
-                                   const T* __restrict__ W, T* __restrict__ Y,
-                                   const int64_t* __restrict__ lora_indices,
+__global__ void bgmv_expand_kernel(T* __restrict__ Y, const T* __restrict__ X,
+                                   const T* __restrict__ W,
+                                   const int64_t* __restrict__ indicies,
+                                   int64_t num_layers, int64_t layer_idx,
                                    float scale) {
   auto block = cg::this_thread_block();
   constexpr size_t vec_size = 16 / sizeof(T);
@@ -148,7 +152,7 @@ __global__ void bgmv_expand_kernel(const T* __restrict__ X,
   constexpr size_t tz = 4;
   size_t tile_idx = blockIdx.x;
   size_t batch_idx = blockIdx.y;
-  size_t lora_idx = lora_indices[batch_idx];
+  int64_t idx = indicies[batch_idx] * num_layers + layer_idx;
 
   // load X;
   vec_t<T, vec_size> x_vec;
@@ -156,7 +160,7 @@ __global__ void bgmv_expand_kernel(const T* __restrict__ X,
 
   // load W;
   vec_t<T, vec_size> w_vec;
-  w_vec.load(W + (lora_idx * feat_out + tile_idx * tz * ty) * feat_in +
+  w_vec.load(W + (idx * feat_out + tile_idx * tz * ty) * feat_in +
              block.thread_rank() * vec_size);
 
   float sum = 0.f;
@@ -179,8 +183,10 @@ __global__ void bgmv_expand_kernel(const T* __restrict__ X,
 }
 
 template <int feat_in, int feat_out, typename T>
-cudaError_t bgmv(const T* X, const T* W, T* Y, const int64_t* lora_indices,
-                 int batch_size, float scale) {
+void bgmv_kernel(T* __restrict__ Y, const T* __restrict__ X,
+                 const T* __restrict__ W, const int64_t* __restrict__ indicies,
+                 int64_t batch_size, int64_t num_layers, int64_t layer_idx,
+                 float scale) {
   size_t vec_size = 16 / sizeof(T);
   if constexpr (feat_in < feat_out) {
     size_t tx = feat_in / vec_size;
@@ -190,14 +196,22 @@ cudaError_t bgmv(const T* X, const T* W, T* Y, const int64_t* lora_indices,
     dim3 nthrs(tx, ty, tz);
 
     bgmv_expand_kernel<feat_in, feat_out>
-        <<<nblks, nthrs>>>(X, W, Y, lora_indices, scale);
-    return cudaGetLastError();
+        <<<nblks, nthrs>>>(Y, X, W, indicies, num_layers, layer_idx, scale);
   } else {
     assert(feat_in % (vec_size * 32) == 0);
     dim3 nblks(feat_out, batch_size);
     dim3 nthrs(32, 4);
     bgmv_shrink_kernel<feat_in, feat_out>
-        <<<nblks, nthrs>>>(W, X, Y, lora_indices, scale);
-    return cudaGetLastError();
+        <<<nblks, nthrs>>>(Y, X, W, indicies, num_layers, layer_idx, scale);
   }
 }
+
+#define INST_BGMV(feat_in, feat_out, T)                                    \
+  template void bgmv_kernel<feat_in, feat_out>(                            \
+      T* __restrict__ Y, const T* __restrict__ X, const T* __restrict__ W, \
+      const int64_t* __restrict__ indicies, int64_t batch_size,            \
+      int64_t num_layers, int64_t layer_idx, float scale);
+
+#define INST_BGMV_TWOSIDE(T, narrow, wide) \
+  INST_BGMV(narrow, wide, T)               \
+  INST_BGMV(wide, narrow, T)

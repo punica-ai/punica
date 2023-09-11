@@ -3,6 +3,8 @@ import punica.ops._kernels
 
 __all__ = [
     "rotary_mha_decode",
+    "bgmv",
+    "add_lora",
 ]
 
 
@@ -68,34 +70,66 @@ def rotary_mha_decode(
   return o
 
 
-def add_lora(
-    x: torch.Tensor,
+def bgmv(
     y: torch.Tensor,
-    wa_all: torch.Tensor,
-    wb_all: torch.Tensor,
+    x: torch.Tensor,
+    w_T_all: torch.Tensor,
     indicies: torch.LongTensor,
     layer_idx: int,
+    scale: float,
 ):
   """
   Semantics:
-    y[i] += (x[i] @ wa_all[indices[i], layer_idx, :, :]
-                  @ wb_all[indices[i], layer_idx, :, :])
+    y[i] += (
+        x[i].unsqueeze(0)
+        @ w_T_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+        * scale
+      ).squeeze(0)
 
   Args:
-    x: Shape: `[B, H1]`. Input vectors.
     y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
-    wa_all: Shape: `[None, L, H1, R]`. All of the LoRA A matrices.
-    wb_all: Shape: `[None, L, R, H2]`. All of the LoRA B matrices.
+    x: Shape: `[B, H1]`. Input vectors.
+    w_T_all: Shape: `[None, L, H2, H1]`. All of the transposed weight matrices.
+    indicies: Shape: `[B]`. Indices of the weight matrices.
+    layer_idx: Layer index of the weight matrices.
+    scale: Scaling factor.
+  """
+  f = punica.ops._kernels.dispatch_bgmv
+  f(y, x, w_T_all, indicies, layer_idx, scale)
+
+
+def add_lora(
+    y: torch.Tensor,
+    x: torch.Tensor,
+    wa_T_all: torch.Tensor,
+    wb_T_all: torch.Tensor,
+    indicies: torch.LongTensor,
+    layer_idx: int,
+    scale: float,
+):
+  """
+  Semantics:
+    y[i] += (
+        x[i].unsqueeze(0)
+        @ wa_T_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+        @ wb_T_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+        * scale
+      ).squeeze(0)
+
+  Args:
+    y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+    x: Shape: `[B, H1]`. Input vectors.
+    wa_T_all: Shape: `[None, L, R, H1]`. All of the transposed LoRA A matrices.
+    wb_T_all: Shape: `[None, L, H2, R]`. All of the transposed LoRA B matrices.
     indicies: Shape: `[B]`. Indices of the LoRA weights.
     layer_idx: Layer index of LoRA weights.
+    scale: Scaling factor.
   """
-  f = punica.ops._kernels.dispatch_bggemv
+  f = punica.ops._kernels.dispatch_bgmv
   device = x.device
   dtype = x.dtype
-  if dtype != torch.float16:
-    raise ValueError(f"Unsupported dtype: {dtype}")
 
-  r = wa_all.size(-1)
+  r = wb_T_all.size(-1)
   tmp = torch.zeros((x.size(0), r), dtype=dtype, device=device)
-  f(x, wa_all, indicies, tmp, layer_idx)
-  f(tmp, wb_all, indicies, y, layer_idx)
+  f(tmp, x, wa_T_all, indicies, layer_idx, 1.0)
+  f(y, tmp, wb_T_all, indicies, layer_idx, scale)

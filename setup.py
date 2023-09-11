@@ -4,7 +4,10 @@ import setuptools
 import torch.utils.cpp_extension as torch_cpp_ext
 
 root = pathlib.Path(__name__).parent
-generated_kernels = [str(p) for p in root.glob("punica/ops/csrc/gen/*.cu")]
+
+
+def glob(pattern):
+  return [str(p) for p in root.glob(pattern)]
 
 
 def get_version(path):
@@ -34,7 +37,8 @@ ext_modules = []
 ext_modules.append(
     torch_cpp_ext.CUDAExtension(
         "punica.ops._kernels",
-        ["punica/ops/csrc/punica_ops.cc"] + generated_kernels,
+        ["punica/ops/csrc/punica_ops.cc"] + glob("punica/ops/csrc/gen/*.cu") +
+        glob("punica/ops/csrc/bgmv/*.cu"),
     ))
 
 setuptools.setup(

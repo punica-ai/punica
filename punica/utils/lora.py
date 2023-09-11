@@ -25,41 +25,49 @@ class LoraManager:
       dtype: torch.dtype,
       device: torch.device,
   ):
-    self._wa = torch.empty((capacity, num_layers, in_features, lora_rank),
-                           dtype=dtype,
-                           device=device)
-    self._wb = torch.empty((capacity, num_layers, lora_rank, out_features),
-                           dtype=dtype,
-                           device=device)
+    self._wa_T = torch.empty((capacity, num_layers, lora_rank, in_features),
+                             dtype=dtype,
+                             device=device)
+    self._wb_T = torch.empty((capacity, num_layers, out_features, lora_rank),
+                             dtype=dtype,
+                             device=device)
     self._free = set(range(capacity))
 
   @property
+  def device(self) -> torch.device:
+    return self._wa_T.device
+
+  @property
+  def dtype(self) -> torch.dtype:
+    return self._wa_T.dtype
+
+  @property
   def capacity(self) -> int:
-    return self._wa.size(0)
+    return self._wa_T.size(0)
 
   @property
   def num_layers(self) -> int:
-    return self._wa.size(1)
+    return self._wa_T.size(1)
 
   @property
   def in_features(self) -> int:
-    return self._wa.size(2)
+    return self._wa_T.size(3)
 
   @property
   def out_features(self) -> int:
-    return self._wb.size(3)
+    return self._wb_T.size(2)
 
   @property
   def lora_rank(self) -> int:
-    return self._wa.size(3)
+    return self._wa_T.size(2)
 
   @property
-  def wa(self) -> torch.Tensor:
-    return self._wa
+  def wa_T(self) -> torch.Tensor:
+    return self._wa_T
 
   @property
-  def wb(self) -> torch.Tensor:
-    return self._wb
+  def wb_T(self) -> torch.Tensor:
+    return self._wb_T
 
   def alloc(self) -> "LoraWeight":
     idx = self._free.pop()
@@ -106,10 +114,10 @@ class LlamaLoraModelWeightIndicies:
   down: LoraWeightIndices
 
   def __init__(self, model_weights: Sequence[LlamaLoraModelWeight]):
-    device = model_weights[0].q.mgr.wa.device
+    device = model_weights[0].q.mgr.device
     for f in ["q", "k", "v", "o", "gate", "up", "down"]:
       mgr = getattr(model_weights[0], f).mgr
-      assert mgr.wa.device == device
+      assert mgr.device == device
       idx = [getattr(w, f).idx for w in model_weights]
       assert all(getattr(w, f).mgr is mgr for w in model_weights)
       indicies = torch.tensor(idx, dtype=torch.long, device=device)
