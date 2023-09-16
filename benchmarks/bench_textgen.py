@@ -30,14 +30,17 @@ def generate_request_set(num_requests: int, maxlen: int) -> RequestSet:
   rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
   prompt_dist = scipy.stats.lognorm(0.8, -1.0, 18.0)
   total_dist = scipy.stats.randint(0, maxlen)
-  prompt_lens = np.minimum(
-      prompt_dist.rvs(size=num_requests, random_state=rng),
-      maxlen - 2).astype(np.int32)
-  total_lens = np.maximum(prompt_lens + 2,
-                          total_dist.rvs(size=num_requests,
-                                         random_state=rng)).astype(np.int32)
-  output_lens = total_lens - prompt_lens
-  return RequestSet(prompt_lens, output_lens)
+  prompt_lens = []
+  output_lens = []
+  for _ in range(num_requests):
+    p = min(max(1, prompt_dist.rvs(random_state=rng)), maxlen - 2)
+    t = max(p + 2, total_dist.rvs(random_state=rng))
+    prompt_lens.append(p)
+    output_lens.append(t - p)
+  return RequestSet(
+      np.array(prompt_lens, dtype=np.int32),
+      np.array(output_lens, dtype=np.int32),
+  )
 
 
 @dataclasses.dataclass
@@ -375,7 +378,7 @@ def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
           model="decapoda-research/llama-13b-hf",
           tokenizer="hf-internal-testing/llama-tokenizer",
           dtype="float16",
-          use_dummy_weights=True,
+          load_format="dummy",
       ))
 
   @dataclasses.dataclass
@@ -481,11 +484,11 @@ def bench_one():
   parser = argparse.ArgumentParser()
   parser.add_argument("--system", choices=BENCH_FN.keys(), default="punica")
   parser.add_argument("--model", choices=MODEL_CFGS.keys(), default="7b")
-  parser.add_argument("--batch_size", type=int, default=16)
+  parser.add_argument("--batch-size", type=int, default=16)
   parser.add_argument("--num_batches", type=int, default=10)
   parser.add_argument("--maxlen", type=int, default=2048)
   parser.add_argument(
-      "--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
+      "--dtype", choices=["float16", "bfloat16"], default="float16")
   parser.add_argument("--device", default="cuda:0")
   args = parser.parse_args()
   bench_fn = BENCH_FN[args.system]

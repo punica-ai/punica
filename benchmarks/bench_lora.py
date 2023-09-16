@@ -16,7 +16,6 @@ from tqdm.auto import tqdm
 
 from .bench_textgen import (ModelConfig, RequestSet, TextGenBenchResult,
                             TextGenConfig, generate_request_set)
-from .benchmark_utils import batched
 
 
 @dataclasses.dataclass
@@ -307,7 +306,7 @@ def bench_one():
   parser.add_argument("--num-batches", type=int, default=10)
   parser.add_argument("--maxlen", type=int, default=2048)
   parser.add_argument(
-      "--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
+      "--dtype", choices=["float16", "bfloat16"], default="float16")
   parser.add_argument("--device", default="cuda:0")
   args = parser.parse_args()
   bench_fn = BENCH_FN[args.system]
