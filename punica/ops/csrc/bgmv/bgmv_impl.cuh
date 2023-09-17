@@ -6,7 +6,7 @@
 #include <cuda/pipeline>
 #include <iostream>
 
-#include "vec_dtypes.cuh"
+#include "../flashinfer/vec_dtypes.cuh"
 
 namespace cg = cooperative_groups;
 
@@ -48,7 +48,7 @@ __global__ void bgmv_shrink_kernel(T* __restrict__ Y, const T* __restrict__ X,
   pipe.producer_commit();
   size_t copy_idx, compute_idx;
   float y = 0.f;
-  vec_t<T, vec_size> x_vec, w_vec;
+  flashinfer::vec_t<T, vec_size> x_vec, w_vec;
   size_t tile_idx;
 
 #pragma unroll
@@ -155,11 +155,11 @@ __global__ void bgmv_expand_kernel(T* __restrict__ Y, const T* __restrict__ X,
   int64_t idx = indicies[batch_idx] * num_layers + layer_idx;
 
   // load X;
-  vec_t<T, vec_size> x_vec;
+  flashinfer::vec_t<T, vec_size> x_vec;
   x_vec.load(X + batch_idx * feat_in + threadIdx.x * vec_size);
 
   // load W;
-  vec_t<T, vec_size> w_vec;
+  flashinfer::vec_t<T, vec_size> w_vec;
   w_vec.load(W + (idx * feat_out + tile_idx * tz * ty) * feat_in +
              block.thread_rank() * vec_size);
 
