@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "bgmv/bgmv_config.h"
+#include "flashinfer_adapter/flashinfer_config.h"
 #include "gen/punica_ops.cc.inc"
 
 namespace {
@@ -151,6 +152,59 @@ void dispatch_rotary_mha_decode(torch::Tensor q_proj, torch::Tensor k_proj,
 ITER_rotary_mha_decode_kvconst(DEFINE_rotary_mha_decode_kvconst);
 ITER_rotary_mha_decode(DEFINE_rotary_mha_decode);
 
+//====== flashinfer ======
+
+void dispatch_batch_decode(torch::Tensor o, torch::Tensor q,
+                           torch::Tensor kv_data, torch::Tensor kv_indptr,
+                           torch::Tensor kv_indicies,
+                           torch::Tensor last_page_offset, int layer_idx) {
+  CHECK_INPUT(o);
+  CHECK_INPUT(q);
+  CHECK_INPUT(kv_data);
+  CHECK_INPUT(kv_indptr);
+  CHECK_INPUT(kv_indicies);
+  CHECK_INPUT(last_page_offset);
+
+  CHECK_DIM(3, o);                 // [B, N, D]
+  CHECK_DIM(3, q);                 // [B, N, D]
+  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_indptr);         // [B+1]
+  CHECK_DIM(1, kv_indicies);       // [None]
+  CHECK_DIM(1, last_page_offset);  // [B]
+
+  int num_layers = static_cast<int>(kv_data.size(1));
+  int num_heads = static_cast<int>(kv_data.size(3));
+  int page_size = static_cast<int>(kv_data.size(4));
+  int head_dim = static_cast<int>(kv_data.size(5));
+  int batch_size = static_cast<int>(o.size(0));
+  CHECK_SHAPE(o, q);
+  CHECK_EQ(kv_indptr.size(0), batch_size + 1);
+  CHECK_EQ(last_page_offset.size(0), batch_size);
+
+  switch (pack_u16(static_cast<uint16_t>(q.scalar_type()), head_dim)) {
+#define CASE(at_dtype, c_type, D)                                       \
+  case pack_u16(static_cast<uint16_t>(at_dtype), D):                    \
+    FlashInferBatchDecodeKernel<D, c_type>(                             \
+        static_cast<c_type*>(o.data_ptr()),                             \
+        static_cast<c_type*>(q.data_ptr()),                             \
+        static_cast<c_type*>(kv_data.data_ptr()),                       \
+        kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(), \
+        last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx,    \
+        num_heads, page_size, batch_size);                              \
+    return
+
+    CASE(torch::ScalarType::Half, nv_half, 64);
+    CASE(torch::ScalarType::Half, nv_half, 128);
+    CASE(torch::ScalarType::BFloat16, nv_bfloat16, 64);
+    CASE(torch::ScalarType::BFloat16, nv_bfloat16, 128);
+    default:
+      break;
+#undef CASE
+  }
+  TORCH_CHECK(false, "No suitable kernel.", " dtype=", q.scalar_type(),
+              " head_dim=", head_dim);
+}
+
 //====== bgmv ======
 
 template <typename T>
@@ -236,5 +290,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("dispatch_rotary_mha_decode", &dispatch_rotary_mha_decode,
         "dispatch_rotary_mha_decode");
 
+  m.def("dispatch_batch_decode", &dispatch_batch_decode, "");
   m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
 }

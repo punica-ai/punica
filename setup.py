@@ -38,7 +38,8 @@ ext_modules.append(
     torch_cpp_ext.CUDAExtension(
         "punica.ops._kernels",
         ["punica/ops/csrc/punica_ops.cc"] + glob("punica/ops/csrc/gen/*.cu") +
-        glob("punica/ops/csrc/bgmv/*.cu"),
+        glob("punica/ops/csrc/bgmv/*.cu") +
+        glob("punica/ops/csrc/flashinfer_adapter/*.cu"),
     ))
 
 setuptools.setup(

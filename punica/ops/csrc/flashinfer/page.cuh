@@ -11,7 +11,7 @@ namespace flashinfer {
  */
 template <typename DType, typename IdType>
 struct paged_kv_t {
-  size_t num_pages;
+  size_t num_pages;  // NOTE(lqchen): not used
   size_t num_layers;
   size_t layer_idx;
   size_t num_heads;
