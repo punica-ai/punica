@@ -108,3 +108,7 @@ class BatchedKvCache:
     self.indicies = torch.tensor(indicies, dtype=torch.int32, device=device)
     self.last_page_offset = torch.tensor(
         last_page_offset, dtype=torch.int32, device=device)
+
+  @property
+  def page_size(self):
+    return self.data.size(-2)
