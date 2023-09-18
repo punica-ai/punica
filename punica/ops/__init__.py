@@ -1,8 +1,11 @@
 import torch
+
 import punica.ops._kernels
+from punica.utils.kvcache import BatchedKvCache
 
 __all__ = [
     "rotary_mha_decode",
+    "batch_decode",
     "bgmv",
     "add_lora",
 ]
@@ -67,6 +70,41 @@ def rotary_mha_decode(
 
   o = torch.empty(q_proj.shape, dtype=dtype, device=device)
   f(q_proj, k_proj, v_proj, o, past_lens, kvbuf, kvidx, layer_idx)
+  return o
+
+
+def mha_rope_decode(
+    q: torch.Tensor,
+    kv: BatchedKvCache,
+    layer_idx: int,
+) -> torch.Tensor:
+  """
+  Perform multi-head attention with rotary position encoding
+  for each input in the batch.
+
+  All inputs in the batch should be in the decoding (auto-regression) stage,
+  i.e., each input should only have one token.
+
+  Both `q` and the `k` in `kv` should NOT be position encoded.
+
+  Notations for shapes:
+  `B`: batch size
+  `N`: number of heads
+  `D`: head dimension
+
+  Args:
+    q: Shape: `[B, N, D]`. Query projection (`X @ W_q`).
+    kv: Batched key-value cache.
+    layer_idx: Layer index of the KV cache.
+
+  Returns:
+    Shape: `[B, N, D]`. Output of the multi-head attention.
+  """
+  f = punica.ops._kernels.dispatch_batch_decode
+  device = q.device
+  dtype = q.dtype
+  o = torch.empty(q.shape, dtype=dtype, device=device)
+  f(o, q, kv.data, kv.indptr, kv.indicies, kv.last_page_offset, layer_idx)
   return o
 
 
