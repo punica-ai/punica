@@ -69,7 +69,7 @@ class TextGenBenchResult:
 def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                    rs: RequestSet) -> TextGenBenchResult:
   from punica.models.llama import LlamaConfig, LlamaForCausalLM
-  from punica.utils import CatTensor, KvPool
+  from punica.utils import CatTensor, KvPool, KvCache, BatchedKvCache
   torch.manual_seed(0xabcdabcd987)
   device = torch.device(model_cfg.device)
   dtype = getattr(torch, model_cfg.dtype)
@@ -89,16 +89,15 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       num_layers=model_cfg.num_layers,
       num_heads=model_cfg.num_heads,
       head_dim=model_cfg.hidden_size // model_cfg.num_heads,
-      capacity=textgen_cfg.batch_size,
-      block_len=2048,
+      capacity=textgen_cfg.batch_size * 2048 // 16,
+      block_len=16,
       dtype=dtype,
       device=device)
 
   @dataclasses.dataclass
   class RequestContext:
     req_idx: int
-    kv_idx: int
-    pastlen: int
+    kvcache: KvCache
     output: list[int]
 
     encode_latency: float
@@ -119,17 +118,18 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       idx = next_req_idx
       next_req_idx += 1
       prompt_len = rs.prompt_lens[idx]
-      kv_idx = kvpool.alloc_block()
+      kvcache = KvCache(kvpool, prompt_len)
       prompt = torch.randint(
           0, 32000, (prompt_len,), dtype=torch.long, device=device)
 
       # Run encode separately because current implementation cannot mix
       # encode and decode.
       t0 = time.perf_counter()
-      past_lens = torch.tensor([0], dtype=torch.long, device=device)
-      kvidx = torch.tensor([kv_idx], dtype=torch.long, device=device)
-      logits, _h = model(kvpool, CatTensor(prompt, [prompt_len]), past_lens,
-                         kvidx)
+      logits, _h = model(
+          input_ids=CatTensor(prompt, [prompt_len]),
+          kv=BatchedKvCache([kvcache]),
+          is_decode=False,
+      )
       logits = logits.cat
       next_token = torch.argmax(logits[-1, :], dim=-1).cpu().item()
       t1 = time.perf_counter()
@@ -138,8 +138,7 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       workset.append(
           RequestContext(
               req_idx=idx,
-              kv_idx=kv_idx,
-              pastlen=logits.size(0),
+              kvcache=kvcache,
               output=[next_token],
               encode_latency=t1 - t0,
               decode_start_at=t1,
@@ -151,13 +150,8 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
         torch.tensor([req.output[-1] for req in workset],
                      dtype=torch.long,
                      device=device), [1] * len(workset))
-    past_lens = torch.tensor([req.pastlen for req in workset],
-                             dtype=torch.long,
-                             device=device)
-    kvidx = torch.tensor([req.kv_idx for req in workset],
-                         dtype=torch.long,
-                         device=device)
-    logits, _h = model(kvpool, input_ids, past_lens, kvidx)
+    kv = BatchedKvCache([req.kvcache for req in workset])
+    logits, _h = model(input_ids, kv, is_decode=True)
     next_tokens = torch.argmax(logits.cat, dim=-1).cpu().numpy()
     assert len(next_tokens) == len(workset)
     pbar.update(len(workset))
@@ -167,7 +161,7 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       req.output.append(next_tokens[batch_idx])
       if len(req.output) == rs.output_lens[req.req_idx]:
         req.decode_latency = time.perf_counter() - req.decode_start_at
-        kvpool.free_block(req.kv_idx)
+        req.kvcache.release()
         done.append(req)
       else:
         new_workset.append(req)
@@ -485,7 +479,7 @@ def bench_one():
   parser.add_argument("--system", choices=BENCH_FN.keys(), default="punica")
   parser.add_argument("--model", choices=MODEL_CFGS.keys(), default="7b")
   parser.add_argument("--batch-size", type=int, default=16)
-  parser.add_argument("--num_batches", type=int, default=10)
+  parser.add_argument("--num-batches", type=int, default=10)
   parser.add_argument("--maxlen", type=int, default=2048)
   parser.add_argument(
       "--dtype", choices=["float16", "bfloat16"], default="float16")
