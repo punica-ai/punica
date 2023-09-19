@@ -14,8 +14,8 @@ from transformers.models.llama.modeling_llama import (
     rotate_half,
 )
 
-from punica.ops import mha_rope_decode
-from punica.utils import CatTensor, BatchedKvCache
+from punica.ops import append_kv, init_kv, mha_rope_decode
+from punica.utils import BatchedKvCache, CatTensor
 
 
 def rotary_pos_emb(q, k, beg):
@@ -75,6 +75,17 @@ class LlamaAttention(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     if not is_decode:
+      torch.cuda.nvtx.range_push("init_kv")
+      init_kv(
+          kv,
+          k_proj.view(-1, self.num_heads, self.head_dim),
+          v_proj.view(-1, self.num_heads, self.head_dim),
+          torch.tensor(
+              [0] + list(lens), dtype=torch.int32, device=q_proj.device),
+          self.layer_idx,
+      )
+      torch.cuda.nvtx.range_pop()
+
       q_proj = q_proj.split(lens)
       k_proj = k_proj.split(lens)
       v_proj = v_proj.split(lens)
@@ -89,17 +100,6 @@ class LlamaAttention(nn.Module):
         value_states = v_proj[batch_idx].view(1, q_len, self.num_heads,
                                               self.head_dim).transpose(1, 2)
         # (1, n, s, d)
-        torch.cuda.nvtx.range_pop()
-
-        torch.cuda.nvtx.range_push("write_kv")
-        for page_no, page_idx in enumerate(
-            kv.indicies[kv.indptr[batch_idx]:kv.indptr[batch_idx + 1]]):
-          st = page_no * kv.page_size
-          ed = min(st + kv.page_size, q_len)
-          kv.data[page_idx, self.layer_idx,
-                  0, :, :ed - st, :] = key_states[0, :, st:ed, :]
-          kv.data[page_idx, self.layer_idx,
-                  1, :, :ed - st, :] = value_states[0, :, st:ed, :]
         torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("pos_emb")
@@ -126,13 +126,8 @@ class LlamaAttention(nn.Module):
       k = k_proj.view(len(lens), self.num_heads, self.head_dim)
       v = v_proj.view(len(lens), self.num_heads, self.head_dim)
 
-      # TODO: batch write_kv
-      torch.cuda.nvtx.range_push("write_kv")
-      for batch_idx in range(len(lens)):
-        page_idx = kv.indicies[kv.indptr[batch_idx + 1] - 1]
-        offset = kv.last_page_offset[batch_idx] - 1
-        kv.data[page_idx, self.layer_idx, 0, :, offset, :] = k[batch_idx]
-        kv.data[page_idx, self.layer_idx, 1, :, offset, :] = v[batch_idx]
+      torch.cuda.nvtx.range_push("append_kv")
+      append_kv(kv, k, v, self.layer_idx)
       torch.cuda.nvtx.range_pop()
 
       torch.cuda.nvtx.range_push(f"batch_decode")

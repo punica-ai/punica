@@ -43,6 +43,30 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 #define CHECK_EQ(a, b) \
   TORCH_CHECK(a == b, "CHECK_EQ(" #a ", " #b ") failed. ", a, " vs ", b)
 
+//====== dispatch pytorch dtype ======
+
+#define _DISPATCH_SWITCH(scalar_type, ...) \
+  [&]() -> bool {                          \
+    switch (scalar_type) {                 \
+      __VA_ARGS__                          \
+      default:                             \
+        return false;                      \
+    }                                      \
+  }()
+
+#define _DISPATCH_CASE(enum_type, c_type_, ...) \
+  case enum_type: {                             \
+    using c_type = c_type_;                     \
+    return __VA_ARGS__();                       \
+  }
+
+#define _DISPATCH_CASES(...)                                 \
+  _DISPATCH_CASE(at::ScalarType::Half, nv_half, __VA_ARGS__) \
+  _DISPATCH_CASE(at::ScalarType::BFloat16, nv_bfloat16, __VA_ARGS__)
+
+#define DISPATCH_TORCH_DTYPE(scalar_type, ...) \
+  _DISPATCH_SWITCH(scalar_type, _DISPATCH_CASES(__VA_ARGS__))
+
 //====== rotary_mha_decode ======
 
 template <typename F>
@@ -154,10 +178,9 @@ ITER_rotary_mha_decode(DEFINE_rotary_mha_decode);
 
 //====== flashinfer ======
 
-void dispatch_batch_decode(torch::Tensor o, torch::Tensor q,
-                           torch::Tensor kv_data, torch::Tensor kv_indptr,
-                           torch::Tensor kv_indicies,
-                           torch::Tensor last_page_offset, int layer_idx) {
+void batch_decode(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
+                  torch::Tensor kv_indptr, torch::Tensor kv_indicies,
+                  torch::Tensor last_page_offset, int layer_idx) {
   CHECK_INPUT(o);
   CHECK_INPUT(q);
   CHECK_INPUT(kv_data);
@@ -181,28 +204,128 @@ void dispatch_batch_decode(torch::Tensor o, torch::Tensor q,
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
 
-  switch (pack_u16(static_cast<uint16_t>(q.scalar_type()), head_dim)) {
-#define CASE(at_dtype, c_type, D)                                       \
-  case pack_u16(static_cast<uint16_t>(at_dtype), D):                    \
-    FlashInferBatchDecodeKernel<D, c_type>(                             \
+#define CASE(dim, _)                                                    \
+  case dim:                                                             \
+    FlashInferBatchDecodeKernel<dim, c_type>(                           \
         static_cast<c_type*>(o.data_ptr()),                             \
         static_cast<c_type*>(q.data_ptr()),                             \
         static_cast<c_type*>(kv_data.data_ptr()),                       \
         kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(), \
         last_page_offset.data_ptr<int32_t>(), num_layers, layer_idx,    \
         num_heads, page_size, batch_size);                              \
-    return
+    return true;
 
-    CASE(torch::ScalarType::Half, nv_half, 64);
-    CASE(torch::ScalarType::Half, nv_half, 128);
-    CASE(torch::ScalarType::BFloat16, nv_bfloat16, 64);
-    CASE(torch::ScalarType::BFloat16, nv_bfloat16, 128);
-    default:
-      break;
-#undef CASE
-  }
-  TORCH_CHECK(false, "No suitable kernel.", " dtype=", q.scalar_type(),
+  bool ok = DISPATCH_TORCH_DTYPE(q.scalar_type(), [&] {
+    switch (head_dim) {
+      FOR_FlashInferBatchDecode_D(CASE);
+      default:
+        return false;
+    }
+  });
+  TORCH_CHECK(ok, "No suitable kernel.", " dtype=", q.scalar_type(),
               " head_dim=", head_dim);
+
+#undef CASE
+}
+
+void init_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
+             torch::Tensor kv_indicies, torch::Tensor last_page_offset,
+             torch::Tensor k, torch::Tensor v, torch::Tensor seqlen_indptr,
+             int layer_idx) {
+  CHECK_INPUT(kv_data);
+  CHECK_INPUT(kv_indptr);
+  CHECK_INPUT(kv_indicies);
+  CHECK_INPUT(last_page_offset);
+  CHECK_INPUT(k);
+  CHECK_INPUT(v);
+  CHECK_INPUT(seqlen_indptr);
+
+  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_indptr);         // [B+1]
+  CHECK_DIM(1, kv_indicies);       // [None]
+  CHECK_DIM(1, last_page_offset);  // [B]
+  CHECK_DIM(3, k);                 // [sum(seqlen_i), N, D]
+  CHECK_DIM(3, v);                 // [sum(seqlen_i), N, D]
+  CHECK_DIM(1, seqlen_indptr);     // [B+1]
+
+  int num_layers = static_cast<int>(kv_data.size(1));
+  int num_heads = static_cast<int>(kv_data.size(3));
+  int page_size = static_cast<int>(kv_data.size(4));
+  int head_dim = static_cast<int>(kv_data.size(5));
+  int batch_size = static_cast<int>(last_page_offset.size(0));
+  CHECK_EQ(kv_indptr.size(0), batch_size + 1);
+  CHECK_EQ(seqlen_indptr.size(0), batch_size + 1);
+
+#define CASE(dim, _)                                                           \
+  case dim:                                                                    \
+    FlashInferInitKvKernel<dim, c_type>(                                       \
+        static_cast<c_type*>(kv_data.data_ptr()),                              \
+        kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),        \
+        last_page_offset.data_ptr<int32_t>(),                                  \
+        static_cast<c_type*>(k.data_ptr()),                                    \
+        static_cast<c_type*>(v.data_ptr()), seqlen_indptr.data_ptr<int32_t>(), \
+        num_layers, layer_idx, num_heads, page_size, batch_size);              \
+    return true;
+
+  bool ok = DISPATCH_TORCH_DTYPE(k.scalar_type(), [&] {
+    switch (head_dim) {
+      FOR_FlashInferBatchDecode_D(CASE);
+      default:
+        return false;
+    }
+  });
+  TORCH_CHECK(ok, "No suitable kernel.", " dtype=", k.scalar_type(),
+              " head_dim=", head_dim);
+#undef CASE
+}
+
+void append_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
+               torch::Tensor kv_indicies, torch::Tensor last_page_offset,
+               torch::Tensor k, torch::Tensor v, int layer_idx) {
+  CHECK_INPUT(kv_data);
+  CHECK_INPUT(kv_indptr);
+  CHECK_INPUT(kv_indicies);
+  CHECK_INPUT(last_page_offset);
+  CHECK_INPUT(k);
+  CHECK_INPUT(v);
+
+  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_indptr);         // [B+1]
+  CHECK_DIM(1, kv_indicies);       // [None]
+  CHECK_DIM(1, last_page_offset);  // [B]
+  CHECK_DIM(3, k);                 // [B, N, D]
+  CHECK_DIM(3, v);                 // [B, N, D]
+
+  int num_layers = static_cast<int>(kv_data.size(1));
+  int num_heads = static_cast<int>(kv_data.size(3));
+  int page_size = static_cast<int>(kv_data.size(4));
+  int head_dim = static_cast<int>(kv_data.size(5));
+  int batch_size = static_cast<int>(k.size(0));
+  CHECK_EQ(kv_indptr.size(0), batch_size + 1);
+  CHECK_EQ(last_page_offset.size(0), batch_size);
+  CHECK_SHAPE(k, v);
+
+#define CASE(dim, _)                                                          \
+  case dim:                                                                   \
+    FlashInferAppendKvKernel<dim, c_type>(                                    \
+        static_cast<c_type*>(kv_data.data_ptr()),                             \
+        kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),       \
+        last_page_offset.data_ptr<int32_t>(),                                 \
+        static_cast<c_type*>(k.data_ptr()),                                   \
+        static_cast<c_type*>(v.data_ptr()), num_layers, layer_idx, num_heads, \
+        page_size, batch_size);                                               \
+    return true;
+
+  bool ok = DISPATCH_TORCH_DTYPE(k.scalar_type(), [&] {
+    switch (head_dim) {
+      FOR_FlashInferBatchDecode_D(CASE);
+      default:
+        return false;
+    }
+  });
+  TORCH_CHECK(ok, "No suitable kernel.", " dtype=", k.scalar_type(),
+              " head_dim=", head_dim);
+#undef CASE
 }
 
 //====== bgmv ======
@@ -290,6 +413,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("dispatch_rotary_mha_decode", &dispatch_rotary_mha_decode,
         "dispatch_rotary_mha_decode");
 
-  m.def("dispatch_batch_decode", &dispatch_batch_decode, "");
+  m.def("batch_decode", &batch_decode, "");
+  m.def("init_kv", &init_kv, "");
+  m.def("append_kv", &append_kv, "");
+
   m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
 }

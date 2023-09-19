@@ -87,25 +87,71 @@ def mha_rope_decode(
 
   Both `q` and the `k` in `kv` should NOT be position encoded.
 
-  Notations for shapes:
-  `B`: batch size
-  `N`: number of heads
-  `D`: head dimension
-
   Args:
-    q: Shape: `[B, N, D]`. Query projection (`X @ W_q`).
+    q: Shape: `[batch_size, num_heads, head_dim]`. \
+       Query projection (`X @ W_q`).
     kv: Batched key-value cache.
     layer_idx: Layer index of the KV cache.
 
   Returns:
-    Shape: `[B, N, D]`. Output of the multi-head attention.
+    Shape: `[batch_size, num_heads, head_dim]`. \
+    Output of the multi-head attention.
   """
-  f = punica.ops._kernels.dispatch_batch_decode
+  f = punica.ops._kernels.batch_decode
   device = q.device
   dtype = q.dtype
   o = torch.empty(q.shape, dtype=dtype, device=device)
   f(o, q, kv.data, kv.indptr, kv.indicies, kv.last_page_offset, layer_idx)
   return o
+
+
+def init_kv(
+    kv: BatchedKvCache,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    seqlen_indptr: torch.Tensor,
+    layer_idx: int,
+):
+  """
+  Copy `k` and `v` to the `kv` cache.
+  Pages of each sequence in the batch are already allocated in `kv`.
+
+  Args:
+    kv: Batched key-value cache.
+    k: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+       Key projection. (`X @ W_k`)
+    v: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+       Value projection. (`X @ W_v`)
+    seqlen_indptr: Shape: `[B + 1]`. Indptr of the sequence lengths. \
+      `seqlen_indptr[i + 1] == sum(seqlen[:i])`.
+    layer_idx: Layer index of the KV cache.
+  """
+  f = punica.ops._kernels.init_kv
+  f(kv.data, kv.indptr, kv.indicies, kv.last_page_offset, k, v, seqlen_indptr,
+    layer_idx)
+
+
+def append_kv(
+    kv: BatchedKvCache,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    layer_idx: int,
+):
+  """
+  Append the new token's `k` and `v` to the `kv` cache.
+  Page for the new token of each sequence in the batch
+  is already allocated in `kv`.
+
+  Args:
+    kv: Batched key-value cache.
+    k: Shape: `[batch_size, num_heads, head_dim]`. \
+       Key projection. (`X @ W_k`)
+    v: Shape: `[batch_size, num_heads, head_dim]`. \
+       Value projection. (`X @ W_v`)
+    layer_idx: Layer index of the KV cache.
+  """
+  f = punica.ops._kernels.append_kv
+  f(kv.data, kv.indptr, kv.indicies, kv.last_page_offset, k, v, layer_idx)
 
 
 def bgmv(
