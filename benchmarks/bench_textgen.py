@@ -69,7 +69,7 @@ class TextGenBenchResult:
 def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
                    rs: RequestSet) -> TextGenBenchResult:
   from punica.models.llama import LlamaConfig, LlamaForCausalLM
-  from punica.utils import CatTensor, KvPool, KvCache, BatchedKvCache
+  from punica.utils import BatchLenInfo, KvPool, KvCache, BatchedKvCache
   torch.manual_seed(0xabcdabcd987)
   device = torch.device(model_cfg.device)
   dtype = getattr(torch, model_cfg.dtype)
@@ -105,7 +105,7 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     decode_latency: float
 
   next_req_idx = 0
-  workset = []
+  workset: list[RequestContext] = []
   done = []
   pbar = tqdm(
       total=rs.output_lens.sum() + rs.prompt_lens.sum(),
@@ -114,57 +114,73 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   t_start = time.perf_counter()
   while len(done) != len(rs):
     # Add new requests to workset
-    while len(workset) < textgen_cfg.batch_size and next_req_idx < len(rs):
+    newreqs = []
+    while (len(workset) + len(newreqs) < textgen_cfg.batch_size and
+           next_req_idx < len(rs)):
       idx = next_req_idx
       next_req_idx += 1
       prompt_len = rs.prompt_lens[idx]
       kvcache = KvCache(kvpool, prompt_len)
-      prompt = torch.randint(
-          0, 32000, (prompt_len,), dtype=torch.long, device=device)
+      prompt = torch.randint(0, 32000, (prompt_len,), device="cpu").tolist()
+      newreqs.append((idx, prompt, kvcache))
 
-      # Run encode separately because current implementation cannot mix
-      # encode and decode.
-      t0 = time.perf_counter()
-      logits, _h = model(
-          input_ids=CatTensor(prompt, [prompt_len]),
-          kv=BatchedKvCache([kvcache]),
-          is_decode=False,
-      )
-      logits = logits.cat
-      next_token = torch.argmax(logits[-1, :], dim=-1).cpu().item()
-      t1 = time.perf_counter()
-      pbar.update(prompt_len + 1)
+    # Batched prefill and decode
+    t1 = time.perf_counter()
+    input_ids = []
+    prefill_kv = []
+    for _, prompt, kvcache in newreqs:
+      input_ids.extend(prompt)
+      prefill_kv.append(kvcache)
+    input_ids.extend(req.output[-1] for req in workset)
+    input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+    blen = BatchLenInfo(
+        prefills=[len(prompt) for _, prompt, _ in newreqs],
+        decode=len(workset),
+        indptr_device=device)
+    prefill_kv = BatchedKvCache(prefill_kv) if newreqs else None
+    decode_kv = BatchedKvCache([req.kvcache for req in workset
+                               ]) if workset else None
+    logits, _ = model(input_ids, blen, prefill_kv, decode_kv)
+    t2 = time.perf_counter()
 
-      workset.append(
-          RequestContext(
-              req_idx=idx,
-              kvcache=kvcache,
-              output=[next_token],
-              encode_latency=t1 - t0,
-              decode_start_at=t1,
-              decode_latency=0.0,
-          ))
-
-    # Batched decode
-    input_ids = CatTensor(
-        torch.tensor([req.output[-1] for req in workset],
-                     dtype=torch.long,
-                     device=device), [1] * len(workset))
-    kv = BatchedKvCache([req.kvcache for req in workset])
-    logits, _h = model(input_ids, kv, is_decode=True)
-    next_tokens = torch.argmax(logits.cat, dim=-1).cpu().numpy()
-    assert len(next_tokens) == len(workset)
-    pbar.update(len(workset))
-    new_workset = []
-    for batch_idx in range(len(workset)):
-      req = workset[batch_idx]
-      req.output.append(next_tokens[batch_idx])
-      if len(req.output) == rs.output_lens[req.req_idx]:
-        req.decode_latency = time.perf_counter() - req.decode_start_at
-        req.kvcache.release()
-        done.append(req)
-      else:
+    # Post-process prefill
+    new_workset: list[RequestContext] = []
+    if newreqs:
+      last_token_indicies = blen.indptr[1:] - 1
+      next_tokens = torch.argmax(
+          logits[last_token_indicies], dim=-1).cpu().numpy()
+      assert len(next_tokens) == len(newreqs)
+      pbar.update(blen.doff + len(newreqs))
+      for batch_idx in range(len(newreqs)):
+        req_idx, prompt, kvcache = newreqs[batch_idx]
+        kvcache.acquire_one()
+        req = RequestContext(
+            req_idx=req_idx,
+            kvcache=kvcache,
+            output=[next_tokens[batch_idx]],
+            encode_latency=t2 - t1,
+            decode_start_at=t1,
+            decode_latency=0.0,
+        )
+        req.output.append(next_tokens[batch_idx])
         new_workset.append(req)
+
+    # Post-process decode
+    if workset:
+      next_tokens = torch.argmax(logits[blen.doff:], dim=-1).cpu().numpy()
+      assert len(next_tokens) == len(workset)
+      pbar.update(len(workset))
+      for batch_idx in range(len(workset)):
+        req = workset[batch_idx]
+        req.output.append(next_tokens[batch_idx])
+        if len(req.output) == rs.output_lens[req.req_idx]:
+          req.decode_latency = t2 - req.decode_start_at
+          req.kvcache.release()
+          done.append(req)
+        else:
+          new_workset.append(req)
+          req.kvcache.acquire_one()
+
     workset = new_workset
   t_end = time.perf_counter()
   pbar.close()

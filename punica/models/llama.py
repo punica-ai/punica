@@ -15,7 +15,7 @@ from transformers.models.llama.modeling_llama import (
 )
 
 from punica.ops import append_kv, init_kv, mha_rope_decode
-from punica.utils import BatchedKvCache, CatTensor
+from punica.utils import BatchedKvCache, BatchLenInfo
 
 
 def rotary_pos_emb(q, k, beg):
@@ -62,43 +62,42 @@ class LlamaAttention(nn.Module):
 
   def forward(
       self,
-      hidden_states: CatTensor,
-      kv: BatchedKvCache,
-      is_decode: bool,
-  ) -> CatTensor:
-    lens = hidden_states.lens
-
+      hidden_states: torch.Tensor,
+      blen: BatchLenInfo,
+      prefill_kv: BatchedKvCache | None,
+      decode_kv: BatchedKvCache | None,
+  ) -> torch.Tensor:
     torch.cuda.nvtx.range_push("qkv_proj")
-    q_proj = self.q_proj(hidden_states.cat)
-    k_proj = self.k_proj(hidden_states.cat)
-    v_proj = self.v_proj(hidden_states.cat)
+    q_proj = self.q_proj(hidden_states)
+    k_proj = self.k_proj(hidden_states)
+    v_proj = self.v_proj(hidden_states)
     torch.cuda.nvtx.range_pop()
+    stack_attn_output = []
 
-    if not is_decode:
+    if len(blen.prefills) > 0:
       torch.cuda.nvtx.range_push("init_kv")
+      assert prefill_kv is not None
       init_kv(
-          kv,
-          k_proj.view(-1, self.num_heads, self.head_dim),
-          v_proj.view(-1, self.num_heads, self.head_dim),
-          torch.tensor(
-              [0] + list(lens), dtype=torch.int32, device=q_proj.device),
+          prefill_kv,
+          k_proj[:blen.doff].view(-1, self.num_heads, self.head_dim),
+          v_proj[:blen.doff].view(-1, self.num_heads, self.head_dim),
+          blen.indptr,
           self.layer_idx,
       )
       torch.cuda.nvtx.range_pop()
 
-      q_proj = q_proj.split(lens)
-      k_proj = k_proj.split(lens)
-      v_proj = v_proj.split(lens)
-      stack_attn_output = []
-      for batch_idx, q_len in enumerate(lens):
+      q_projs = q_proj[:blen.doff].split(blen.prefills)
+      k_projs = k_proj[:blen.doff].split(blen.prefills)
+      v_projs = v_proj[:blen.doff].split(blen.prefills)
+      for batch_idx, q_len in enumerate(blen.prefills):
         torch.cuda.nvtx.range_push(f"batch_idx={batch_idx}")
         torch.cuda.nvtx.range_push("transpose")
-        query_states = q_proj[batch_idx].view(1, q_len, self.num_heads,
-                                              self.head_dim).transpose(1, 2)
-        key_states = k_proj[batch_idx].view(1, q_len, self.num_heads,
-                                            self.head_dim).transpose(1, 2)
-        value_states = v_proj[batch_idx].view(1, q_len, self.num_heads,
-                                              self.head_dim).transpose(1, 2)
+        query_states = q_projs[batch_idx].view(1, q_len, self.num_heads,
+                                               self.head_dim).transpose(1, 2)
+        key_states = k_projs[batch_idx].view(1, q_len, self.num_heads,
+                                             self.head_dim).transpose(1, 2)
+        value_states = v_projs[batch_idx].view(1, q_len, self.num_heads,
+                                               self.head_dim).transpose(1, 2)
         # (1, n, s, d)
         torch.cuda.nvtx.range_pop()
 
@@ -120,25 +119,31 @@ class LlamaAttention(nn.Module):
         stack_attn_output.append(attn_output)
         torch.cuda.nvtx.range_pop()
         torch.cuda.nvtx.range_pop()
-      attn_outputs = torch.cat(stack_attn_output, dim=0)
-    else:
-      q = q_proj.view(len(lens), self.num_heads, self.head_dim)
-      k = k_proj.view(len(lens), self.num_heads, self.head_dim)
-      v = v_proj.view(len(lens), self.num_heads, self.head_dim)
+
+    if blen.decode > 0:
+      q = q_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
+      k = k_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
+      v = v_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
 
       torch.cuda.nvtx.range_push("append_kv")
-      append_kv(kv, k, v, self.layer_idx)
+      assert decode_kv is not None
+      append_kv(decode_kv, k, v, self.layer_idx)
       torch.cuda.nvtx.range_pop()
 
       torch.cuda.nvtx.range_push(f"batch_decode")
-      attn_outputs = mha_rope_decode(q, kv, self.layer_idx)
-      attn_outputs = attn_outputs.view(len(lens), self.hidden_size)
+      attn_outputs = mha_rope_decode(q, decode_kv, self.layer_idx)
+      attn_outputs = attn_outputs.view(blen.decode, self.hidden_size)
+      stack_attn_output.append(attn_outputs)
       torch.cuda.nvtx.range_pop()
+
+    if len(stack_attn_output) == 1:
+      attn_outputs = stack_attn_output[0]
+    else:
+      attn_outputs = torch.cat(stack_attn_output, dim=0)
 
     # output projection
     torch.cuda.nvtx.range_push("o_proj")
     attn_output = self.o_proj(attn_outputs)
-    attn_output = CatTensor(attn_output, lens)
     torch.cuda.nvtx.range_pop()
 
     return attn_output
@@ -158,13 +163,11 @@ class LlamaDecoderLayer(nn.Module):
 
   def forward(
       self,
-      hidden_states: CatTensor,
-      kv: BatchedKvCache,
-      is_decode: bool,
+      hidden_states: torch.Tensor,
+      blen: BatchLenInfo,
+      prefill_kv: BatchedKvCache | None,
+      decode_kv: BatchedKvCache | None,
   ) -> torch.Tensor:
-    lens = hidden_states.lens
-
-    hidden_states = hidden_states.cat
     residual = hidden_states
 
     torch.cuda.nvtx.range_push("input_norm")
@@ -173,9 +176,7 @@ class LlamaDecoderLayer(nn.Module):
 
     # Self Attention
     torch.cuda.nvtx.range_push("LlamaAttention")
-    hidden_states = self.self_attn(
-        CatTensor(hidden_states, lens), kv, is_decode)
-    hidden_states = hidden_states.cat
+    hidden_states = self.self_attn(hidden_states, blen, prefill_kv, decode_kv)
     torch.cuda.nvtx.range_pop()
     torch.cuda.nvtx.range_push("r")
     hidden_states = residual + hidden_states
@@ -193,7 +194,6 @@ class LlamaDecoderLayer(nn.Module):
     hidden_states = residual + hidden_states
     torch.cuda.nvtx.range_pop()
 
-    hidden_states = CatTensor(hidden_states, lens)
     return hidden_states
 
 
@@ -223,24 +223,23 @@ class LlamaModel(LlamaPreTrainedModel):
 
   def forward(
       self,
-      input_ids: CatTensor,
-      kv: BatchedKvCache,
-      is_decode: bool,
-  ) -> CatTensor:
+      input_ids: torch.Tensor,
+      blen: BatchLenInfo,
+      prefill_kv: BatchedKvCache | None,
+      decode_kv: BatchedKvCache | None,
+  ) -> torch.Tensor:
     torch.cuda.nvtx.range_push(f"embed")
-    hidden_states = CatTensor(self.embed_tokens(input_ids.cat), input_ids.lens)
+    hidden_states = self.embed_tokens(input_ids)
     torch.cuda.nvtx.range_pop()
 
     for layer_idx, decoder_layer in enumerate(self.layers):
       torch.cuda.nvtx.range_push(f"layer={layer_idx}")
-      hidden_states = decoder_layer(hidden_states, kv, is_decode)
+      hidden_states = decoder_layer(hidden_states, blen, prefill_kv, decode_kv)
       torch.cuda.nvtx.range_pop()
 
-    lens = hidden_states.lens
     torch.cuda.nvtx.range_push("lastnorm")
-    hidden_states = self.norm(hidden_states.cat)
+    hidden_states = self.norm(hidden_states)
     torch.cuda.nvtx.range_pop()
-    hidden_states = CatTensor(hidden_states, lens)
 
     return hidden_states
 
@@ -255,16 +254,15 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
   def forward(
       self,
-      input_ids: CatTensor,
-      kv: BatchedKvCache,
-      is_decode: bool,
-  ) -> Tuple[CatTensor, CatTensor]:
+      input_ids: torch.Tensor,
+      blen: BatchLenInfo,
+      prefill_kv: BatchedKvCache | None,
+      decode_kv: BatchedKvCache | None,
+  ) -> Tuple[torch.Tensor, torch.Tensor]:
     torch.cuda.nvtx.range_push("LlamaForCausalLM")
-    hidden_states = self.model(input_ids, kv, is_decode)
-    lens = hidden_states.lens
+    hidden_states = self.model(input_ids, blen, prefill_kv, decode_kv)
     torch.cuda.nvtx.range_push("lm_head")
-    logits = self.lm_head(hidden_states.cat)
+    logits = self.lm_head(hidden_states)
     torch.cuda.nvtx.range_pop()
-    logits = CatTensor(logits, lens)
     torch.cuda.nvtx.range_pop()
     return logits, hidden_states

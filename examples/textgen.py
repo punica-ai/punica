@@ -6,25 +6,6 @@ import transformers
 import punica
 
 
-def prepare_logits_processor(
-    temperature: float,
-    repetition_penalty: float,
-    top_p: float,
-    top_k: int,
-) -> transformers.LogitsProcessorList:
-  processor_list = transformers.LogitsProcessorList()
-  if temperature > 0 and temperature != 1.0:
-    processor_list.append(transformers.TemperatureLogitsWarper(temperature))
-  if repetition_penalty > 1.0:
-    processor_list.append(
-        transformers.RepetitionPenaltyLogitsProcessor(repetition_penalty))
-  if 0 < top_p < 1.0:
-    processor_list.append(transformers.TopPLogitsWarper(top_p))
-  if top_k > 0:
-    processor_list.append(transformers.TopKLogitsWarper(top_k))
-  return processor_list
-
-
 class TextGeneration:
 
   def __init__(
@@ -150,26 +131,25 @@ def main():
 
   # Prefill
   logits, _ = model(
-      input_ids=punica.utils.CatTensor(
-          torch.tensor(input_ids, dtype=torch.long, device=device),
-          [len(input_ids)]),
-      kv=punica.utils.BatchedKvCache([kvcache]),
-      is_decode=False,
+      input_ids=torch.tensor(input_ids, dtype=torch.long, device=device),
+      blen=punica.utils.BatchLenInfo([len(input_ids)], 0, device),
+      prefill_kv=punica.utils.BatchedKvCache([kvcache]),
+      decode_kv=None,
   )
-  next_token_id = textgen.get_next_token_id(logits.cat)
+  next_token_id = textgen.get_next_token_id(logits)
   textgen.append_token(next_token_id)
 
   # Decode
   while not textgen.is_stop():
     kvcache.acquire_one()
     logits, _ = model(
-        input_ids=punica.utils.CatTensor(
-            torch.tensor([next_token_id], dtype=torch.long, device=device),
-            [1]),
-        kv=punica.utils.BatchedKvCache([kvcache]),
-        is_decode=True,
+        input_ids=torch.tensor([next_token_id], dtype=torch.long,
+                               device=device),
+        blen=punica.utils.BatchLenInfo([], 1, device),
+        prefill_kv=None,
+        decode_kv=punica.utils.BatchedKvCache([kvcache]),
     )
-    next_token_id = textgen.get_next_token_id(logits.cat)
+    next_token_id = textgen.get_next_token_id(logits)
     textgen.append_token(next_token_id)
 
     text = tokenizer.decode(
