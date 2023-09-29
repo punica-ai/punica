@@ -162,7 +162,6 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
             decode_start_at=t1,
             decode_latency=0.0,
         )
-        req.output.append(next_tokens[batch_idx])
         new_workset.append(req)
 
     # Post-process decode
