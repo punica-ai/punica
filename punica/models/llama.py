@@ -9,12 +9,11 @@ from torch import nn
 from transformers.models.llama.modeling_llama import (
     LlamaConfig,
     LlamaMLP,
-    LlamaRMSNorm,
     PreTrainedModel,
     rotate_half,
 )
 
-from punica.ops import append_kv, init_kv, mha_rope_decode
+from punica.ops import append_kv, init_kv, mha_rope_decode, rms_norm
 from punica.utils import BatchedKvCache, BatchLenInfo
 
 
@@ -147,6 +146,17 @@ class LlamaAttention(nn.Module):
     torch.cuda.nvtx.range_pop()
 
     return attn_output
+
+
+class LlamaRMSNorm(nn.Module):
+
+  def __init__(self, hidden_size, eps=1e-6):
+    super().__init__()
+    self.weight = nn.Parameter(torch.ones(hidden_size))
+    self.variance_epsilon = eps
+
+  def forward(self, hidden_states):
+    return rms_norm(hidden_states, self.weight, self.variance_epsilon)
 
 
 class LlamaDecoderLayer(nn.Module):

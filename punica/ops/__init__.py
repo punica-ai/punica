@@ -8,6 +8,7 @@ __all__ = [
     "batch_decode",
     "bgmv",
     "add_lora",
+    "rms_norm",
 ]
 
 
@@ -217,3 +218,13 @@ def add_lora(
   tmp = torch.zeros((x.size(0), r), dtype=dtype, device=device)
   f(tmp, x, wa_T_all, indicies, layer_idx, 1.0)
   f(y, tmp, wb_T_all, indicies, layer_idx, scale)
+
+
+def rms_norm(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    eps: float = 1e-6,
+):
+  o = torch.empty_like(x)
+  punica.ops._kernels.rms_norm(o, x, w, eps)
+  return o

@@ -7,6 +7,7 @@
 #include "bgmv/bgmv_config.h"
 #include "flashinfer_adapter/flashinfer_config.h"
 #include "gen/punica_ops.cc.inc"
+#include "rms_norm/rms_norm.h"
 
 namespace {
 
@@ -401,6 +402,35 @@ void dispatch_bgmv(torch::Tensor y, torch::Tensor x, torch::Tensor w,
               " dtype=", x.scalar_type());
 }
 
+//====== rms_norm ======
+
+void dispatch_rms_norm(torch::Tensor output, torch::Tensor input,
+                       torch::Tensor weight, float epsilon) {
+  CHECK_INPUT(output);
+  CHECK_INPUT(input);
+  CHECK_INPUT(weight);
+
+  CHECK_DIM(2, input);
+  CHECK_DIM(1, weight);
+  CHECK_SHAPE(output, input);
+  CHECK_EQ(input.size(input.dim() - 1), weight.size(0));
+  CHECK_EQ(input.scalar_type(), weight.scalar_type());
+  CHECK_EQ(input.scalar_type(), output.scalar_type());
+
+  int rows = input.size(0);
+  int columns = input.size(1);
+
+  bool ok = DISPATCH_TORCH_DTYPE(input.scalar_type(), [&] {
+    return rms_norm<c_type>(static_cast<c_type*>(output.data_ptr()),
+                            static_cast<c_type*>(input.data_ptr()),
+                            static_cast<c_type*>(weight.data_ptr()), rows,
+                            columns, epsilon);
+  });
+
+  TORCH_CHECK(ok, "No suitable kernel.", " dtype=", input.scalar_type(),
+              " columns=", columns);
+}
+
 }  // namespace
 
 //====== pybind ======
@@ -418,4 +448,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("append_kv", &append_kv, "");
 
   m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
+
+  m.def("rms_norm", &dispatch_rms_norm, "");
 }
