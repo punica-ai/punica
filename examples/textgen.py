@@ -2,8 +2,11 @@ import argparse
 
 import torch
 import transformers
+import torch.distributed as dist
 
 import punica
+from punica.utils import create_tensor_parallel_group, init_distributed, is_distributed, get_local_rank_from_launcher
+from punica.models.tensor_parallel import AutoTP
 
 
 class TextGeneration:
@@ -89,16 +92,28 @@ def main():
 
   args = parser.parse_args()
   dtype = torch.float16
-  device = torch.device("cuda:0")
+  local_rank = get_local_rank_from_launcher()
+  torch.cuda.set_device(local_rank)
+  device = torch.device("cuda:{}".format(local_rank))
 
   tokenizer = transformers.AutoTokenizer.from_pretrained(
       args.model, use_fast=True)
   model_config = transformers.LlamaConfig.from_pretrained(args.model)
   model = punica.models.llama.LlamaForCausalLM.from_pretrained(
-      args.model, low_cpu_mem_usage=True, torch_dtype=dtype).to(device)
+      args.model, low_cpu_mem_usage=True, torch_dtype=dtype)
+  if is_distributed():
+    init_distributed()
+    mp_group = create_tensor_parallel_group()
+    mp_size = len(dist.get_process_group_ranks(mp_group))
+    auto_tp = AutoTP(mp_group, mp_size)
+    model = auto_tp.replace_module(model)
+  else:
+    mp_size = 1
+  model = model.to(device)
+  
   kvpool = punica.utils.KvPool(
       num_layers=model_config.num_hidden_layers,
-      num_heads=model_config.num_attention_heads,
+      num_heads=model_config.num_attention_heads // mp_size,
       head_dim=model_config.hidden_size // model_config.num_attention_heads,
       capacity=4096 // 16,
       block_len=16,
@@ -139,6 +154,7 @@ def main():
   next_token_id = textgen.get_next_token_id(logits)
   textgen.append_token(next_token_id)
 
+  print("Prefill finished")
   # Decode
   while not textgen.is_stop():
     kvcache.acquire_one()
