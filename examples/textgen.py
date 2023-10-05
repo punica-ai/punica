@@ -141,7 +141,8 @@ def main():
       spaces_between_special_tokens=False,
       clean_up_tokenization_spaces=True,
   )
-  print(text, end="", flush=True)
+  if mp_size == 1 or dist.get_rank() == 0:
+    print(text, end="", flush=True)
   last_print_len = len(text)
 
   # Prefill
@@ -154,7 +155,8 @@ def main():
   next_token_id = textgen.get_next_token_id(logits)
   textgen.append_token(next_token_id)
 
-  print("Prefill finished")
+  if mp_size == 1 or dist.get_rank() == 0:
+    print("Prefill finished")
   # Decode
   while not textgen.is_stop():
     kvcache.acquire_one()
@@ -174,10 +176,12 @@ def main():
         spaces_between_special_tokens=False,
         clean_up_tokenization_spaces=True,
     )
-    print(text[last_print_len:], end="", flush=True)
+    if mp_size == 1 or dist.get_rank() == 0:
+      print(text[last_print_len:], end="", flush=True)
     last_print_len = len(text)
 
-  print()
+  if mp_size == 1 or dist.get_rank() == 0:
+    print()
 
 
 if __name__ == "__main__":
