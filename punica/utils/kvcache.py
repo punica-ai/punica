@@ -35,6 +35,10 @@ class KvPool:
     c, l, _, n, p, d = self._buf.shape
     return p
 
+  @property
+  def num_free_blocks(self):
+    return len(self._free)
+
   def alloc_block(self) -> int:
     idx = self._free.pop()
     return idx
@@ -75,9 +79,10 @@ class KvCache:
 
   def acquire_one(self):
     """Reserve space for one more token"""
-    self._seqlen += 1
-    if self._seqlen % self._pool.block_len == 0:
+    last_page_offset = (self._seqlen - 1) % self._pool.block_len + 1
+    if last_page_offset == self._pool.block_len:
       self._indicies.append(self._pool.alloc_block())
+    self._seqlen += 1
 
   def release(self):
     """Release all blocks"""
