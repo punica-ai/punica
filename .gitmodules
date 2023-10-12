@@ -1,0 +1,6 @@
+[submodule "third_party/nvbench"]
+	path = third_party/nvbench
+	url = https://github.com/NVIDIA/nvbench.git
+[submodule "third_party/cutlass"]
+	path = third_party/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
