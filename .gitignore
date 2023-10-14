@@ -1,5 +1,6 @@
 data/
 build/
+.cache/
 __pycache__/
 *.egg-info/
 *.py[cod]

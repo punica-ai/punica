@@ -1,0 +1,7 @@
+CompileFlags:
+  Remove:
+  - -forward-unknown-to-host-compiler
+  - -arch=native
+Diagnostics:
+  Suppress:
+  - variadic_device_fn
