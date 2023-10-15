@@ -67,38 +67,74 @@ bool sgmv(DType *y, DType *x, DType **w, int32_t *s, void *tmp_d,
 
   using cutlass::epilogue::thread::LinearCombination;
   using cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle;
-  using GemmKernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
-      cutlass_t,                                      // Element A
-      cutlass::layout::RowMajor,                      // Layout A
-      cutlass::ComplexTransform::kNone,               //
-      8,                                              // Granularity A
-      cutlass_t,                                      // Element B
-      cutlass::layout::RowMajor,                      // Layout B
-      cutlass::ComplexTransform::kNone,               //
-      8,                                              // Granularity B
-      cutlass_t,                                      // Element C&D
-      cutlass::layout::RowMajor,                      // Layout C&D
-      float,                                          // Element Accumulator
-      cutlass::arch::OpClassTensorOp,                 // Operator Class Tag
-      cutlass::arch::Sm80,                            // Architecture
-      cutlass::gemm::GemmShape<64, 64, 16>,           // Thread Block Shape
-      cutlass::gemm::GemmShape<32, 32, 16>,           // Warp Shape
-      cutlass::gemm::GemmShape<16, 8, 8>,             // Instruction Shape
-      LinearCombination<cutlass_t, 8, float, float>,  // Epilogue
-      GemmIdentityThreadblockSwizzle<1>,              // Swizzling Operator
-      2                                               // Stages
-      >::GemmKernel;
+  if (d_in < d_out) {
+    using GemmKernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
+        cutlass_t,                                      // Element A
+        cutlass::layout::RowMajor,                      // Layout A
+        cutlass::ComplexTransform::kNone,               //
+        8,                                              // Granularity A
+        cutlass_t,                                      // Element B
+        cutlass::layout::RowMajor,                      // Layout B
+        cutlass::ComplexTransform::kNone,               //
+        8,                                              // Granularity B
+        cutlass_t,                                      // Element C&D
+        cutlass::layout::RowMajor,                      // Layout C&D
+        float,                                          // Element Accumulator
+        cutlass::arch::OpClassTensorOp,                 // Operator Class Tag
+        cutlass::arch::Sm80,                            // Architecture
+        cutlass::gemm::GemmShape<32, 128, 16>,          // Thread Block Shape
+        cutlass::gemm::GemmShape<32, 64, 16>,           // Warp Shape
+        cutlass::gemm::GemmShape<16, 8, 8>,             // Instruction Shape
+        LinearCombination<cutlass_t, 8, float, float>,  // Epilogue
+        GemmIdentityThreadblockSwizzle<1>,              // Swizzling Operator
+        2                                               // Stages
+        >::GemmKernel;
 
-  using EpilogueOutputOp = typename GemmKernel::Epilogue::OutputOp;
-  typename EpilogueOutputOp::Params epilogue_op(1.0, 1.0);
+    using EpilogueOutputOp = typename GemmKernel::Epilogue::OutputOp;
+    typename EpilogueOutputOp::Params epilogue_op(1.0, 1.0);
 
-  using GemmGrouped = cutlass::gemm::device::GemmGrouped<GemmKernel>;
-  typename GemmGrouped::Arguments args(all_problems, num_problems, 512,
-                                       epilogue_op, ptr_X, (cutlass_t **)w,
-                                       ptr_Y, ptr_Y, ld_X, ld_W, ld_Y, ld_Y);
+    using GemmGrouped = cutlass::gemm::device::GemmGrouped<GemmKernel>;
+    typename GemmGrouped::Arguments args(all_problems, num_problems, 512,
+                                         epilogue_op, ptr_X, (cutlass_t **)w,
+                                         ptr_Y, ptr_Y, ld_X, ld_W, ld_Y, ld_Y);
 
-  GemmGrouped gemm;
-  if (gemm.initialize(args) != cutlass::Status::kSuccess) return false;
-  if (gemm.run() != cutlass::Status::kSuccess) return false;
+    GemmGrouped gemm;
+    if (gemm.initialize(args) != cutlass::Status::kSuccess) return false;
+    if (gemm.run() != cutlass::Status::kSuccess) return false;
+  } else {
+    using GemmKernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
+        cutlass_t,                                      // Element A
+        cutlass::layout::RowMajor,                      // Layout A
+        cutlass::ComplexTransform::kNone,               //
+        8,                                              // Granularity A
+        cutlass_t,                                      // Element B
+        cutlass::layout::RowMajor,                      // Layout B
+        cutlass::ComplexTransform::kNone,               //
+        8,                                              // Granularity B
+        cutlass_t,                                      // Element C&D
+        cutlass::layout::RowMajor,                      // Layout C&D
+        float,                                          // Element Accumulator
+        cutlass::arch::OpClassTensorOp,                 // Operator Class Tag
+        cutlass::arch::Sm80,                            // Architecture
+        cutlass::gemm::GemmShape<16, 64, 64>,           // Thread Block Shape
+        cutlass::gemm::GemmShape<16, 16, 64>,           // Warp Shape
+        cutlass::gemm::GemmShape<16, 8, 16>,            // Instruction Shape
+        LinearCombination<cutlass_t, 4, float, float>,  // Epilogue
+        GemmIdentityThreadblockSwizzle<2>,              // Swizzling Operator
+        2                                               // Stages
+        >::GemmKernel;
+
+    using EpilogueOutputOp = typename GemmKernel::Epilogue::OutputOp;
+    typename EpilogueOutputOp::Params epilogue_op(1.0, 1.0);
+
+    using GemmGrouped = cutlass::gemm::device::GemmGrouped<GemmKernel>;
+    typename GemmGrouped::Arguments args(all_problems, num_problems, 512,
+                                         epilogue_op, ptr_X, (cutlass_t **)w,
+                                         ptr_Y, ptr_Y, ld_X, ld_W, ld_Y, ld_Y);
+
+    GemmGrouped gemm;
+    if (gemm.initialize(args) != cutlass::Status::kSuccess) return false;
+    if (gemm.run() != cutlass::Status::kSuccess) return false;
+  }
   return true;
 }
