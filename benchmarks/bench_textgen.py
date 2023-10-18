@@ -113,10 +113,10 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
       desc="punica")
   t_start = time.perf_counter()
   while len(done) != len(rs):
-    # Add new requests to workset
+    # Add at most one new request to workset
     newreqs = []
-    while (len(workset) + len(newreqs) < textgen_cfg.batch_size and
-           next_req_idx < len(rs)):
+    if (len(workset) + len(newreqs) < textgen_cfg.batch_size and
+        next_req_idx < len(rs)):
       idx = next_req_idx
       next_req_idx += 1
       prompt_len = rs.prompt_lens[idx]
