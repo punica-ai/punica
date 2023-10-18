@@ -1,6 +1,6 @@
 import torch
 
-import punica.ops._kernels
+import punica.ops._kernels as _kernels
 from punica.utils.kvcache import BatchedKvCache
 
 __all__ = [
@@ -63,7 +63,7 @@ def rotary_mha_decode(
         Advances in Neural Information Processing Systems 35 (2022): 16344-16359.
         https://arxiv.org/abs/2205.14135
   """
-  f = punica.ops._kernels.dispatch_rotary_mha_decode
+  f = _kernels.dispatch_rotary_mha_decode
   device = q_proj.device
   dtype = q_proj.dtype
   if dtype != torch.float16:
@@ -98,7 +98,7 @@ def mha_rope_decode(
     Shape: `[batch_size, num_heads, head_dim]`. \
     Output of the multi-head attention.
   """
-  f = punica.ops._kernels.batch_decode
+  f = _kernels.batch_decode
   device = q.device
   dtype = q.dtype
   o = torch.empty(q.shape, dtype=dtype, device=device)
@@ -127,7 +127,7 @@ def init_kv(
       `seqlen_indptr[i + 1] == sum(seqlen[:i])`.
     layer_idx: Layer index of the KV cache.
   """
-  f = punica.ops._kernels.init_kv
+  f = _kernels.init_kv
   f(kv.data, kv.indptr, kv.indicies, kv.last_page_offset, k, v, seqlen_indptr,
     layer_idx)
 
@@ -151,7 +151,7 @@ def append_kv(
        Value projection. (`X @ W_v`)
     layer_idx: Layer index of the KV cache.
   """
-  f = punica.ops._kernels.append_kv
+  f = _kernels.append_kv
   f(kv.data, kv.indptr, kv.indicies, kv.last_page_offset, k, v, layer_idx)
 
 
@@ -179,7 +179,7 @@ def bgmv(
     layer_idx: Layer index of the weight matrices.
     scale: Scaling factor.
   """
-  f = punica.ops._kernels.dispatch_bgmv
+  f = _kernels.dispatch_bgmv
   f(y, x, w_T_all, indicies, layer_idx, scale)
 
 
@@ -210,7 +210,7 @@ def add_lora(
     layer_idx: Layer index of LoRA weights.
     scale: Scaling factor.
   """
-  f = punica.ops._kernels.dispatch_bgmv
+  f = _kernels.dispatch_bgmv
   device = x.device
   dtype = x.dtype
 
@@ -220,11 +220,41 @@ def add_lora(
   f(y, tmp, wb_T_all, indicies, layer_idx, scale)
 
 
+def sgmv_cutlass(
+    y: torch.Tensor,
+    x: torch.Tensor,
+    w_ptr: torch.Tensor,
+    s: torch.IntTensor,
+    layer_idx: int,
+):
+  tmp_size = _kernels.sgmv_cutlass_tmp_size(w_ptr.size(0))
+  tmp = torch.empty((tmp_size,), dtype=torch.uint8, device=x.device)
+  _kernels.sgmv_cutlass(y, x, w_ptr, s, tmp, layer_idx)
+
+
+def add_lora_sgmv_cutlass(
+    y: torch.Tensor,
+    x: torch.Tensor,
+    wa_ptr: torch.Tensor,
+    wb_ptr: torch.Tensor,
+    s: torch.IntTensor,
+    layer_idx: int,
+    lora_rank: int,
+    scale: float,
+):
+  tmp_size = _kernels.sgmv_cutlass_tmp_size(wa_ptr.size(0))
+  tmp = torch.empty((tmp_size,), dtype=torch.uint8, device=x.device)
+  v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
+  _kernels.sgmv_cutlass(v, x, wa_ptr, s, tmp, layer_idx)
+  v *= scale
+  _kernels.sgmv_cutlass(y, v, wb_ptr, s, tmp, layer_idx)
+
+
 def rms_norm(
     x: torch.Tensor,
     w: torch.Tensor,
     eps: float = 1e-6,
 ):
   o = torch.empty_like(x)
-  punica.ops._kernels.rms_norm(o, x, w, eps)
+  _kernels.rms_norm(o, x, w, eps)
   return o

@@ -7,17 +7,18 @@
 
 #include "cutlass/util/device_memory.h"
 #include "nvbench/nvbench.cuh"
-#include "sgmv/sgmv.cuh"
+#include "sgmv/sgmv_cutlass.cuh"
 
 template <typename T>
 void sgmv_cpu_reference(T *y, T *x, T **w, int *s, int num_problems, int d_in,
-                        int d_out) {
+                        int d_out, int layer_idx) {
   for (int p = 0; p < num_problems; p++) {
     for (int i = s[p]; i < s[p + 1]; i++) {
       for (int j = 0; j < d_out; j++) {
         float accum = y[i * d_out + j];
         for (int k = 0; k < d_in; k++) {
-          accum += float(x[i * d_in + k]) * float(w[p][k * d_out + j]);
+          accum += float(x[i * d_in + k]) *
+                   float(w[p][layer_idx * d_in * d_out + k * d_out + j]);
         }
         y[i * d_out + j] = accum;
       }
@@ -39,6 +40,7 @@ void bench_sgmv(nvbench::state &state) {
   int d_in = state.get_int64("d_in");
   int d_out = state.get_int64("d_out");
   int num_loras = 100;
+  int num_layers = 3;
   std::mt19937 gen(0xabcdabcd987);
   std::normal_distribution<float> dis;
 
@@ -71,8 +73,8 @@ void bench_sgmv(nvbench::state &state) {
     x[i] = dis(gen);
   }
   for (size_t i = 0; i < num_loras; i++) {
-    w_all[i].resize(d_in * d_out);
-    for (size_t j = 0; j < d_in * d_out; j++) {
+    w_all[i].resize(num_layers * d_in * d_out);
+    for (size_t j = 0; j < w_all[i].size(); j++) {
       w_all[i][j] = dis(gen);
     }
   }
@@ -86,42 +88,46 @@ void bench_sgmv(nvbench::state &state) {
   for (size_t i = 0; i < num_loras; i++) {
     w_all_d.emplace_back(w_all[i].begin(), w_all[i].end());
   }
-  thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
   thrust::device_vector<int32_t> s_d(s.begin(), s.end());
-  std::vector<half> y_cpu_ref(y_init.begin(), y_init.end());
 
   // build w ptr
   std::vector<half *> w;
   for (int i = 0; i < num_problems; ++i) {
     w.push_back(w_all[i].data());
   }
-  std::vector<cutlass_t *> w_gpu_ptr;
+  std::vector<half *> w_gpu_ptr;
   for (int i = 0; i < num_problems; ++i) {
-    w_gpu_ptr.push_back(
-        (cutlass_t *)thrust::raw_pointer_cast(w_all_d[i].data()));
+    w_gpu_ptr.push_back(thrust::raw_pointer_cast(w_all_d[i].data()));
   }
-  thrust::device_vector<cutlass_t *> w_d(w_gpu_ptr.begin(), w_gpu_ptr.end());
-  cutlass::DeviceAllocation<char> tmp_d(num_problems * 52);
+  thrust::device_vector<half *> w_d(w_gpu_ptr.begin(), w_gpu_ptr.end());
+  cutlass::DeviceAllocation<char> tmp_d(sgmv_tmp_size(num_problems));
 
-  // call cpu_reference function
-  sgmv_cpu_reference(y_cpu_ref.data(), x.data(), w.data(), s.data(),
-                     num_problems, d_in, d_out);
+  for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+    // call cpu_reference function
+    std::vector<half> y_cpu_ref(y_init.begin(), y_init.end());
+    sgmv_cpu_reference(y_cpu_ref.data(), x.data(), w.data(), s.data(),
+                       num_problems, d_in, d_out, layer_idx);
 
-  // call sgmv function
-  sgmv(thrust::raw_pointer_cast(y_d.data()),
-       thrust::raw_pointer_cast(x_d.data()),
-       (half **)thrust::raw_pointer_cast(w_d.data()),
-       thrust::raw_pointer_cast(s_d.data()), tmp_d.get(), num_problems, d_in,
-       d_out);
+    // call sgmv function
+    thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
+    sgmv(thrust::raw_pointer_cast(y_d.data()),
+         thrust::raw_pointer_cast(x_d.data()),
+         thrust::raw_pointer_cast(w_d.data()),
+         thrust::raw_pointer_cast(s_d.data()), tmp_d.get(), num_problems, d_in,
+         d_out, layer_idx);
 
-  // copy thrust device_vector y_d to std vector y_h
-  thrust::host_vector<half> y_h = y_d;
+    // copy thrust device_vector y_d to std vector y_h
+    thrust::host_vector<half> y_h = y_d;
 
-  // compare y_h and y_cpu_ref
-  for (size_t i = 0; i < batch_size * d_out; i++) {
-    if (!isclose(float(y_h[i]), float(y_cpu_ref[i]), 1e-3, 1e-3)) {
-      state.skip("y_h and y_cpu_ref are not close");
-      return;
+    // compare y_h and y_cpu_ref
+    for (size_t i = 0; i < batch_size * d_out; i++) {
+      if (!isclose(float(y_h[i]), float(y_cpu_ref[i]), 1e-3, 1e-3)) {
+        state.skip("y_h and y_cpu_ref are not close");
+        printf("layer_idx=%i, i=%zu, ref=%f, our=%f, diff=%f\n", layer_idx, i,
+               float(y_cpu_ref[i]), float(y_h[i]),
+               float(y_h[i]) - float(y_cpu_ref[i]));
+        return;
+      }
     }
   }
 
@@ -133,12 +139,14 @@ void bench_sgmv(nvbench::state &state) {
   );
   state.add_global_memory_writes<char>(batch_size * d_out * sizeof(half));
 
+  thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch &) {
+    int layer_idx = 0;
     sgmv(thrust::raw_pointer_cast(y_d.data()),
          thrust::raw_pointer_cast(x_d.data()),
          (half **)thrust::raw_pointer_cast(w_d.data()),
          thrust::raw_pointer_cast(s_d.data()), tmp_d.get(), num_problems, d_in,
-         d_out);
+         d_out, layer_idx);
   });
 }
 

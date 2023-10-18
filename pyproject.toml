@@ -1,2 +1,5 @@
 [tool.yapf]
 based_on_style = "yapf"
+
+[tool.pytest.ini_options]
+addopts = "--ignore=third_party"
