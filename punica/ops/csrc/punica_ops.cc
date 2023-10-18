@@ -6,7 +6,6 @@
 
 #include "bgmv/bgmv_config.h"
 #include "flashinfer_adapter/flashinfer_config.h"
-#include "gen/punica_ops.cc.inc"
 #include "rms_norm/rms_norm.h"
 #include "sgmv/sgmv.h"
 
@@ -68,115 +67,6 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 
 #define DISPATCH_TORCH_DTYPE(scalar_type, ...) \
   _DISPATCH_SWITCH(scalar_type, _DISPATCH_CASES(__VA_ARGS__))
-
-//====== rotary_mha_decode ======
-
-template <typename F>
-inline void rotary_mha_decode_kvconst(F kernel, torch::Tensor q_proj,
-                                      torch::Tensor k_proj,
-                                      torch::Tensor v_proj, torch::Tensor o,
-                                      torch::Tensor past_len,
-                                      torch::Tensor kvbuf, torch::Tensor kvidx,
-                                      int64_t layer_idx) {
-  int64_t B = q_proj.size(0);
-  int64_t nnz = kvbuf.size(0);
-  kernel(k_proj.data_ptr(), o.data_ptr(), q_proj.data_ptr(), v_proj.data_ptr(),
-         kvbuf.data_ptr(), kvidx.data_ptr(), past_len.data_ptr(), B, layer_idx,
-         nnz);
-}
-
-#define DEFINE_rotary_mha_decode_kvconst(name)                                \
-  void name(torch::Tensor q_proj, torch::Tensor k_proj, torch::Tensor v_proj, \
-            torch::Tensor o, torch::Tensor past_len, torch::Tensor kvbuf,     \
-            torch::Tensor kvidx, int64_t layer_idx) {                         \
-    rotary_mha_decode_kvconst(launch_##name##_kernel, q_proj, k_proj, v_proj, \
-                              o, past_len, kvbuf, kvidx, layer_idx);          \
-  }
-
-template <typename F>
-inline void rotary_mha_decode(F kernel, torch::Tensor q_proj,
-                              torch::Tensor k_proj, torch::Tensor v_proj,
-                              torch::Tensor o, torch::Tensor past_len,
-                              torch::Tensor kvbuf, torch::Tensor kvidx,
-                              int64_t layer_idx) {
-  int64_t B = q_proj.size(0);
-  int64_t H = q_proj.size(1);
-  int64_t nnz = kvbuf.size(0);
-  int64_t L = kvbuf.size(1);
-  int64_t MAXLEN = kvbuf.size(3);
-  kernel(k_proj.data_ptr(), o.data_ptr(), q_proj.data_ptr(), v_proj.data_ptr(),
-         kvbuf.data_ptr(), kvidx.data_ptr(), past_len.data_ptr(), B, H, L,
-         MAXLEN, layer_idx, nnz);
-}
-
-#define DEFINE_rotary_mha_decode(name)                                        \
-  void name(torch::Tensor q_proj, torch::Tensor k_proj, torch::Tensor v_proj, \
-            torch::Tensor o, torch::Tensor past_len, torch::Tensor kvbuf,     \
-            torch::Tensor kvidx, int64_t layer_idx) {                         \
-    rotary_mha_decode(launch_##name##_kernel, q_proj, k_proj, v_proj, o,      \
-                      past_len, kvbuf, kvidx, layer_idx);                     \
-  }
-
-void dispatch_rotary_mha_decode(torch::Tensor q_proj, torch::Tensor k_proj,
-                                torch::Tensor v_proj, torch::Tensor o,
-                                torch::Tensor past_len, torch::Tensor kvbuf,
-                                torch::Tensor kvidx, int64_t layer_idx) {
-  CHECK_INPUT(q_proj);
-  CHECK_INPUT(k_proj);
-  CHECK_INPUT(v_proj);
-  CHECK_INPUT(o);
-  CHECK_INPUT(past_len);
-  CHECK_INPUT(kvbuf);
-  CHECK_INPUT(kvidx);
-
-  CHECK_DIM(3, q_proj);
-  CHECK_DIM(3, k_proj);
-  CHECK_DIM(3, v_proj);
-  CHECK_DIM(3, o);
-  CHECK_DIM(1, past_len);
-  CHECK_DIM(6, kvbuf);
-  CHECK_DIM(1, kvidx);
-
-  int64_t B = q_proj.size(0);
-  int64_t H = q_proj.size(1);
-  int64_t D = q_proj.size(2);
-  CHECK_SHAPE(q_proj, k_proj);
-  CHECK_SHAPE(q_proj, v_proj);
-  CHECK_SHAPE(q_proj, o);
-  CHECK_EQ(past_len.size(0), B);
-
-  int64_t L = kvbuf.size(1);
-  CHECK_EQ(kvbuf.size(2), 2);
-  int64_t maxlen = kvbuf.size(3);
-  CHECK_EQ(kvbuf.size(4), H);
-  CHECK_EQ(kvbuf.size(5), D);
-  CHECK_EQ(kvidx.size(0), B);
-
-#define DISPATCH(num_heads, head_dim, num_layers, MAXLEN, dtype)                                                \
-  if (H == num_heads && D == head_dim && L == num_layers &&                                                     \
-      maxlen == MAXLEN) {                                                                                       \
-    return rotary_mha_decode_kvconst(                                                                           \
-        launch_rotary_mha_decode_kvconst_##num_heads##_##head_dim##_##num_layers##_##MAXLEN##_##dtype##_kernel, \
-        q_proj, k_proj, v_proj, o, past_len, kvbuf, kvidx, layer_idx);                                          \
-  }
-  ARGS_rotary_mha_decode_kvconst(DISPATCH);
-#undef DISPATCH
-
-#define DISPATCH(head_dim, dtype)                                       \
-  if (D == head_dim) {                                                  \
-    return rotary_mha_decode(                                           \
-        launch_rotary_mha_decode_##head_dim##_##dtype##_kernel, q_proj, \
-        k_proj, v_proj, o, past_len, kvbuf, kvidx, layer_idx);          \
-  }
-  ARGS_rotary_mha_decode(DISPATCH);
-#undef DISPATCH
-
-  TORCH_CHECK(false, "No suitable kernel. B=", B, " H=", H, " D=", D, " L=", L,
-              " maxlen=", maxlen);
-}
-
-ITER_rotary_mha_decode_kvconst(DEFINE_rotary_mha_decode_kvconst);
-ITER_rotary_mha_decode(DEFINE_rotary_mha_decode);
 
 //====== flashinfer ======
 
@@ -466,14 +356,7 @@ void dispatch_rms_norm(torch::Tensor output, torch::Tensor input,
 
 //====== pybind ======
 
-#define DEFINE_pybind(name) m.def(#name, &name, #name);
-
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  ITER_rotary_mha_decode_kvconst(DEFINE_pybind);
-  ITER_rotary_mha_decode(DEFINE_pybind);
-  m.def("dispatch_rotary_mha_decode", &dispatch_rotary_mha_decode,
-        "dispatch_rotary_mha_decode");
-
   m.def("batch_decode", &batch_decode, "");
   m.def("init_kv", &init_kv, "");
   m.def("append_kv", &append_kv, "");

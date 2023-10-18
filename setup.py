@@ -36,14 +36,14 @@ remove_unwanted_pytorch_nvcc_flags()
 ext_modules = []
 ext_modules.append(
     torch_cpp_ext.CUDAExtension(
-        "punica.ops._kernels",
-        [
+        name="punica.ops._kernels",
+        sources=[
             "punica/ops/csrc/punica_ops.cc",
+            "punica/ops/csrc/bgmv/bgmv_all.cu",
+            "punica/ops/csrc/flashinfer_adapter/flashinfer_all.cu",
+            "punica/ops/csrc/rms_norm/rms_norm_cutlass.cu",
             "punica/ops/csrc/sgmv/sgmv_cutlass.cu",
-        ] + glob("punica/ops/csrc/gen/*.cu") +
-        glob("punica/ops/csrc/bgmv/*.cu") +
-        glob("punica/ops/csrc/flashinfer_adapter/*.cu") +
-        glob("punica/ops/csrc/rms_norm/*.cu"),
+        ],
         include_dirs=[str(root.resolve() / "third_party/cutlass/include")],
     ))
 
