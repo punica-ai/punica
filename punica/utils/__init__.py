@@ -1,8 +1,6 @@
 from punica.utils.cat_tensor import BatchLenInfo, CatTensor
 from punica.utils.kvcache import BatchedKvCache, KvCache, KvPool
-from punica.utils.lora import (LlamaLoraManager, LlamaLoraModelWeight,
-                               LlamaLoraModelWeightIndicies, LoraManager,
-                               LoraWeight, LoraWeightIndices)
+from punica.utils.lora import LoraWeight, BatchedLoraWeight
 
 __all__ = [
     "CatTensor",
@@ -10,11 +8,6 @@ __all__ = [
     "KvPool",
     "KvCache",
     "BatchedKvCache",
-    # Lora
-    "LoraManager",
     "LoraWeight",
-    "LoraWeightIndices",
-    "LlamaLoraModelWeight",
-    "LlamaLoraModelWeightIndicies",
-    "LlamaLoraManager",
+    "BatchedLoraWeight",
 ]

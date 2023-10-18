@@ -7,7 +7,6 @@ Greedy generation, no sampling, no beam search.
 
 import argparse
 import dataclasses
-import logging
 import time
 
 import numpy as np
@@ -21,60 +20,52 @@ from .bench_textgen import (ModelConfig, RequestSet, TextGenBenchResult,
 @dataclasses.dataclass
 class LoraConfig:
   rank: int
-  alpha: int
 
 
 @torch.inference_mode()
 def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                 textgen_cfg: TextGenConfig,
                 rs: RequestSet) -> TextGenBenchResult:
-  from punica.models.llama_lora import LlamaConfig, LlamaForCausalLMWithLora
-  from punica.utils import (CatTensor, KvPool, LlamaLoraManager,
-                            LlamaLoraModelWeightIndicies)
+  from punica.models.llama_lora import (
+      BatchedLlamaLoraWeight,
+      LlamaConfig,
+      LlamaForCausalLMWithLora,
+      LlamaLoraWeight,
+  )
+  from punica.utils import BatchedKvCache, BatchLenInfo, KvCache, KvPool
   torch.manual_seed(0xabcdabcd987)
   device = torch.device(model_cfg.device)
   dtype = getattr(torch, model_cfg.dtype)
   default_dtype = torch.get_default_dtype()
   torch.set_default_dtype(dtype)
+  llama_config = LlamaConfig(
+      hidden_size=model_cfg.hidden_size,
+      num_attention_heads=model_cfg.num_heads,
+      intermediate_size=model_cfg.intermediate_size,
+      num_hidden_layers=model_cfg.num_layers,
+  )
   with device:
-    model = LlamaForCausalLMWithLora(
-        config=LlamaConfig(
-            hidden_size=model_cfg.hidden_size,
-            num_attention_heads=model_cfg.num_heads,
-            intermediate_size=model_cfg.intermediate_size,
-            num_hidden_layers=model_cfg.num_layers,
-        ),
-        lora_scale=1.0,
-    ).to(device)
+    model = LlamaForCausalLMWithLora(llama_config).to(device)
   torch.set_default_dtype(default_dtype)
 
   kvpool = KvPool(
       num_layers=model_cfg.num_layers,
       num_heads=model_cfg.num_heads,
       head_dim=model_cfg.hidden_size // model_cfg.num_heads,
-      capacity=textgen_cfg.batch_size,
-      block_len=2048,
+      capacity=textgen_cfg.batch_size * 2048 // 16,
+      block_len=16,
       dtype=dtype,
       device=device)
-  lora_mgr = LlamaLoraManager(
-      capacity=textgen_cfg.batch_size,
-      num_layers=model_cfg.num_layers,
-      hidden_size=model_cfg.hidden_size,
-      intermediate_size=model_cfg.intermediate_size,
-      lora_rank=lora_cfg.rank,
-      dtype=dtype,
-      device=device,
-  )
-  for mgr in [lora_mgr.mgr_hh, lora_mgr.mgr_hi, lora_mgr.mgr_ih]:
-    mgr._wa_T.copy_(torch.randn_like(mgr._wa_T))
-    mgr._wb_T.copy_(torch.randn_like(mgr._wb_T))
-  lora_models = [lora_mgr.alloc() for _ in range(textgen_cfg.batch_size)]
+  lora_models = [
+      LlamaLoraWeight(llama_config, lora_cfg.rank, dtype, device)
+      for _ in range(textgen_cfg.batch_size)
+  ]
 
   @dataclasses.dataclass
   class RequestContext:
     req_idx: int
-    kv_idx: int
-    pastlen: int
+    kvcache: KvCache
+    lora_weight: LlamaLoraWeight
     output: list[int]
 
     encode_latency: float
@@ -82,7 +73,7 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
     decode_latency: float
 
   next_req_idx = 0
-  workset = []
+  workset: list[RequestContext] = []
   done = []
   pbar = tqdm(
       total=rs.output_lens.sum() + rs.prompt_lens.sum(),
@@ -90,67 +81,82 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       desc="punica")
   t_start = time.perf_counter()
   while len(done) != len(rs):
-    # Add new requests to workset
-    while len(workset) < textgen_cfg.batch_size and next_req_idx < len(rs):
+    # Add at most one new request to workset
+    newreqs = []
+    if (len(workset) + len(newreqs) < textgen_cfg.batch_size and
+        next_req_idx < len(rs)):
       idx = next_req_idx
       next_req_idx += 1
       prompt_len = rs.prompt_lens[idx]
-      kv_idx = kvpool.alloc_block()
-      prompt = torch.randint(
-          0, 32000, (prompt_len,), dtype=torch.long, device=device)
+      kvcache = KvCache(kvpool, prompt_len)
+      prompt = torch.randint(0, 32000, (prompt_len,), device="cpu").tolist()
+      lora_weight = lora_models[torch.randint(0, len(lora_models), (1,)).item()]
+      newreqs.append((idx, prompt, kvcache, lora_weight))
 
-      # Run encode separately because current implementation cannot mix
-      # encode and decode.
-      t0 = time.perf_counter()
-      past_lens = torch.tensor([0], dtype=torch.long, device=device)
-      kvidx = torch.tensor([kv_idx], dtype=torch.long, device=device)
-      lora = LlamaLoraModelWeightIndicies(
-          [lora_models[idx % len(lora_models)]] * prompt_len)
-      logits, _h = model(kvpool, CatTensor(prompt, [prompt_len]), past_lens,
-                         kvidx, lora)
-      logits = logits.cat
-      next_token = torch.argmax(logits[-1, :], dim=-1).cpu().item()
-      t1 = time.perf_counter()
-      pbar.update(prompt_len + 1)
+    # Batched prefill and decode
+    t1 = time.perf_counter()
+    input_ids = []
+    prefill_kv = []
+    weights, lora_lens = [], []
+    for _, prompt, kvcache, lora_weight in newreqs:
+      input_ids.extend(prompt)
+      prefill_kv.append(kvcache)
+      weights.append(lora_weight)
+      lora_lens.append(len(prompt))
+    input_ids.extend(req.output[-1] for req in workset)
+    weights.extend(req.lora_weight for req in workset)
+    lora_lens.extend([1] * len(workset))
 
-      workset.append(
-          RequestContext(
-              req_idx=idx,
-              kv_idx=kv_idx,
-              pastlen=logits.size(0),
-              output=[next_token],
-              encode_latency=t1 - t0,
-              decode_start_at=t1,
-              decode_latency=0.0,
-          ))
+    input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+    blen = BatchLenInfo(
+        prefills=[len(prompt) for _, prompt, _, _ in newreqs],
+        decode=len(workset),
+        indptr_device=device)
+    prefill_kv = BatchedKvCache(prefill_kv) if newreqs else None
+    decode_kv = BatchedKvCache([req.kvcache for req in workset
+                               ]) if workset else None
+    lora = BatchedLlamaLoraWeight(weights, lora_lens)
+    logits, _ = model(input_ids, blen, prefill_kv, decode_kv, lora)
+    t2 = time.perf_counter()
 
-    # Batched decode
-    input_ids = CatTensor(
-        torch.tensor([req.output[-1] for req in workset],
-                     dtype=torch.long,
-                     device=device), [1] * len(workset))
-    past_lens = torch.tensor([req.pastlen for req in workset],
-                             dtype=torch.long,
-                             device=device)
-    kvidx = torch.tensor([req.kv_idx for req in workset],
-                         dtype=torch.long,
-                         device=device)
-    lora = LlamaLoraModelWeightIndicies(
-        [lora_models[req.req_idx % len(lora_models)] for req in workset])
-    logits, _h = model(kvpool, input_ids, past_lens, kvidx, lora)
-    next_tokens = torch.argmax(logits.cat, dim=-1).cpu().numpy()
-    assert len(next_tokens) == len(workset)
-    pbar.update(len(workset))
-    new_workset = []
-    for batch_idx in range(len(workset)):
-      req = workset[batch_idx]
-      req.output.append(next_tokens[batch_idx])
-      if len(req.output) == rs.output_lens[req.req_idx]:
-        req.decode_latency = time.perf_counter() - req.decode_start_at
-        kvpool.free_block(req.kv_idx)
-        done.append(req)
-      else:
+    # Post-process prefill
+    new_workset: list[RequestContext] = []
+    if newreqs:
+      last_token_indicies = blen.indptr[1:] - 1
+      next_tokens = torch.argmax(
+          logits[last_token_indicies], dim=-1).cpu().numpy()
+      assert len(next_tokens) == len(newreqs)
+      pbar.update(blen.doff + len(newreqs))
+      for batch_idx in range(len(newreqs)):
+        req_idx, prompt, kvcache, lora_weight = newreqs[batch_idx]
+        kvcache.acquire_one()
+        req = RequestContext(
+            req_idx=req_idx,
+            kvcache=kvcache,
+            lora_weight=lora_weight,
+            output=[next_tokens[batch_idx]],
+            encode_latency=t2 - t1,
+            decode_start_at=t1,
+            decode_latency=0.0,
+        )
         new_workset.append(req)
+
+    # Post-process decode
+    if workset:
+      next_tokens = torch.argmax(logits[blen.doff:], dim=-1).cpu().numpy()
+      assert len(next_tokens) == len(workset)
+      pbar.update(len(workset))
+      for batch_idx in range(len(workset)):
+        req = workset[batch_idx]
+        req.output.append(next_tokens[batch_idx])
+        if len(req.output) == rs.output_lens[req.req_idx]:
+          req.decode_latency = t2 - req.decode_start_at
+          req.kvcache.release()
+          done.append(req)
+        else:
+          new_workset.append(req)
+          req.kvcache.acquire_one()
+
     workset = new_workset
   t_end = time.perf_counter()
   pbar.close()
@@ -317,7 +323,7 @@ def bench_one():
   rs = generate_request_set(
       num_requests=args.batch_size * args.num_batches, maxlen=args.maxlen)
   textgen_cfg = TextGenConfig(batch_size=args.batch_size)
-  lora_cfg = LoraConfig(rank=args.lora_rank, alpha=args.lora_rank * 2)
+  lora_cfg = LoraConfig(rank=args.lora_rank)
   res = bench_fn(model_cfg, lora_cfg, textgen_cfg, rs)
 
   t = res.encode_latency / rs.prompt_lens

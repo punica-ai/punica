@@ -33,14 +33,13 @@ def lora_ref_impl(
     wb: torch.Tensor,
     s: torch.IntTensor,
     layer_idx: int,
-    scale: float,
 ):
   for i in range(len(wa)):
     xi = x[s[i]:s[i + 1]].to(torch.float32)
     wai = wa[i][layer_idx, :, :].to(torch.float32)
     wbi = wb[i][layer_idx, :, :].to(torch.float32)
     yi = y[s[i]:s[i + 1]].to(torch.float32)
-    tmp = ((xi @ wai).to(y.dtype) * scale).to(torch.float32)
+    tmp = (xi @ wai).to(y.dtype).to(torch.float32)
     y[s[i]:s[i + 1]] = (yi + tmp @ wbi).to(y.dtype)
 
 
@@ -85,7 +84,6 @@ def test_lora_correctness(dtype_str, batch_setup):
   h1 = 4096
   h2 = 11008
   r = 16
-  scale = 0.123
   num_problems, problem_size = map(int, batch_setup.split("x"))
   dtype = getattr(torch, dtype_str)
   device = torch.device("cuda:0")
@@ -113,8 +111,7 @@ def test_lora_correctness(dtype_str, batch_setup):
 
   for layer_idx in range(num_layers):
     y_ref = y.clone()
-    lora_ref_impl(y_ref, x, wa, wb, s, layer_idx, scale)
+    lora_ref_impl(y_ref, x, wa, wb, s, layer_idx)
     y_our = y.clone()
-    punica.ops.add_lora_sgmv_cutlass(y_our, x, wa_ptr, wb_ptr, s, layer_idx, r,
-                                     scale)
+    punica.ops.add_lora_sgmv_cutlass(y_our, x, wa_ptr, wb_ptr, s, layer_idx, r)
     assert_close(y_ref, y_our)
