@@ -1,3 +1,4 @@
+import gzip
 import itertools
 import json
 import pathlib
@@ -48,6 +49,7 @@ class batch_decode_Resources:
       kvcache.release()
 
 
+@torch.inference_mode()
 def bench_batch_decode(f):
   num_heads_ = [32, 40]
   batch_size_ = [
@@ -71,30 +73,25 @@ def bench_batch_decode(f):
     pbar.set_postfix(setup)
     torch.manual_seed(0xabcdabcd987)
     gc_torch()
-    try:
-      res = batch_decode_Resources(
-          num_heads=num_heads,
-          head_dim=head_dim,
-          block_len=block_len,
-          seqlens=[seqlen] * batch_size,
-          dtype=dtype,
-          device=device,
-      )
-    except torch.cuda.OutOfMemoryError:
-      print("OOM", setup)
-      continue
-
-    try:
-      result = bench(
-          lambda: punica.ops.mha_rope_decode(res.q, res.kv, layer_idx=0))
-    except torch.cuda.OutOfMemoryError:
-      res.release()
-      print("OOM", setup)
-      continue
-
+    res = batch_decode_Resources(
+        num_heads=num_heads,
+        head_dim=head_dim,
+        block_len=block_len,
+        seqlens=[seqlen] * batch_size,
+        dtype=dtype,
+        device=device,
+    )
+    latency = bench(
+        lambda: punica.ops.mha_rope_decode(res.q, res.kv, layer_idx=0))
     res.release()
 
-    result = {"setup": setup, "avg": result.avg(), "std": result.std()}
+    result = {
+        "setup": setup,
+        "latency": {
+            "avg": latency.avg(),
+            "std": latency.std()
+        },
+    }
     f.write(json.dumps(result) + "\n")
     f.flush()
 
@@ -103,11 +100,11 @@ def main():
   this_file = pathlib.Path(__file__)
   project_root = this_file.parents[1]
   now = datetime.now(pytz.timezone("US/Pacific"))
-  out_filename = f"{now:%Y%m%d-%H%M%S}-{this_file.stem}.jsonl"
+  out_filename = f"{now:%Y%m%d-%H%M%S}-{this_file.stem}.jsonl.gz"
   out_path = project_root / "data" / out_filename
 
   print(out_path)
-  with open(out_path, "w") as f:
+  with gzip.open(out_path, "wt") as f:
     bench_batch_decode(f)
 
 
