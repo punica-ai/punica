@@ -7,14 +7,79 @@ Greedy generation, no sampling, no beam search.
 
 import argparse
 import dataclasses
+import json
+import pathlib
 import time
+from datetime import datetime
 
 import numpy as np
+import pytz
 import torch
 from tqdm.auto import tqdm
 
-from .bench_textgen import (ModelConfig, RequestSet, TextGenBenchResult,
-                            TextGenConfig, generate_request_set)
+from .bench_textgen import (
+    ModelConfig,
+    TextGenBenchResult,
+    TextGenConfig,
+    generate_request_set,
+)
+
+
+@dataclasses.dataclass
+class LoraRequestSet:
+  prompt_lens: np.ndarray
+  output_lens: np.ndarray
+  lora_idx: np.ndarray
+  num_lora_models: int
+
+  def __len__(self):
+    return len(self.prompt_lens)
+
+
+def get_lora_lens(bs: int, popularity: str) -> list[int]:
+  if popularity == "bmm":
+    return [bs]
+  if popularity == "bgmv":
+    return [1] * bs
+  if popularity == "uniform":
+    n = int(np.ceil(np.sqrt(bs)))
+    lens = np.array([bs // n] * n)
+    while True:
+      diff = bs - lens.sum()
+      if diff == 0:
+        break
+      lens[:abs(diff)] += np.sign(diff)
+    return lens.tolist()
+  if popularity.startswith("zipf:"):
+    alpha = float(popularity.split(":")[1])
+    assert alpha > 1
+    lens = [1]
+    a = alpha
+    while sum(lens) + int(np.floor(a)) < bs:
+      lens.append(int(np.floor(a)))
+      a *= alpha
+    lens.append(bs - sum(lens))
+    return sorted(lens, reverse=True)
+  raise KeyError(popularity)
+
+
+def generate_lora_request_set(
+    num_requests: int,
+    maxlen: int,
+    lora_popularity: str,
+) -> LoraRequestSet:
+  rs = generate_request_set(num_requests, maxlen)
+  lora_lens = get_lora_lens(num_requests, lora_popularity)
+  rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  lora_idx = [i for i, l in enumerate(lora_lens) for _ in range(l)]
+  lora_idx = np.array(lora_idx, dtype=np.int32)
+  rng.shuffle(lora_idx)
+  return LoraRequestSet(
+      prompt_lens=rs.prompt_lens,
+      output_lens=rs.output_lens,
+      lora_idx=lora_idx,
+      num_lora_models=len(lora_lens),
+  )
 
 
 @dataclasses.dataclass
@@ -25,7 +90,7 @@ class LoraConfig:
 @torch.inference_mode()
 def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                 textgen_cfg: TextGenConfig,
-                rs: RequestSet) -> TextGenBenchResult:
+                rs: LoraRequestSet) -> TextGenBenchResult:
   from punica.models.llama_lora import (
       BatchedLlamaLoraWeight,
       LlamaConfig,
@@ -58,14 +123,16 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       device=device)
   lora_models = [
       LlamaLoraWeight(llama_config, lora_cfg.rank, dtype, device)
-      for _ in range(textgen_cfg.batch_size)
+      for _ in range(min(rs.num_lora_models, textgen_cfg.batch_size))
   ]
+  while len(lora_models) < rs.num_lora_models:
+    mirror_idx = len(lora_models) % textgen_cfg.batch_size
+    lora_models.append(lora_models[mirror_idx])
 
   @dataclasses.dataclass
   class RequestContext:
     req_idx: int
     kvcache: KvCache
-    lora_weight: LlamaLoraWeight
     output: list[int]
 
     encode_latency: float
@@ -90,32 +157,42 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       prompt_len = rs.prompt_lens[idx]
       kvcache = KvCache(kvpool, prompt_len)
       prompt = torch.randint(0, 32000, (prompt_len,), device="cpu").tolist()
-      lora_weight = lora_models[torch.randint(0, len(lora_models), (1,)).item()]
-      newreqs.append((idx, prompt, kvcache, lora_weight))
+      newreqs.append((idx, prompt, kvcache))
 
-    # Batched prefill and decode
+    # Prepare prefill inputs
     t1 = time.perf_counter()
     input_ids = []
     prefill_kv = []
-    weights, lora_lens = [], []
-    for _, prompt, kvcache, lora_weight in newreqs:
+    lora_idx, lora_lens = [], []
+    for idx, prompt, kvcache in newreqs:
       input_ids.extend(prompt)
       prefill_kv.append(kvcache)
-      weights.append(lora_weight)
+      lora_idx.append(rs.lora_idx[idx])
       lora_lens.append(len(prompt))
-    input_ids.extend(req.output[-1] for req in workset)
-    weights.extend(req.lora_weight for req in workset)
-    lora_lens.extend([1] * len(workset))
 
+    # Prepare decode inputs
+    for req in workset:
+      input_ids.append(req.output[-1])
+
+      # workset is ordered by lora_idx
+      li = rs.lora_idx[idx]
+      if lora_idx and lora_idx[-1] == li:
+        lora_lens[-1] += 1
+      else:
+        lora_idx.append(li)
+        lora_lens.append(1)
+
+    # Run model
     input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
     blen = BatchLenInfo(
-        prefills=[len(prompt) for _, prompt, _, _ in newreqs],
+        prefills=[len(prompt) for _, prompt, _ in newreqs],
         decode=len(workset),
         indptr_device=device)
     prefill_kv = BatchedKvCache(prefill_kv) if newreqs else None
     decode_kv = BatchedKvCache([req.kvcache for req in workset
                                ]) if workset else None
-    lora = BatchedLlamaLoraWeight(weights, lora_lens)
+    lora = BatchedLlamaLoraWeight([lora_models[idx] for idx in lora_idx],
+                                  lora_lens)
     logits, _ = model(input_ids, blen, prefill_kv, decode_kv, lora)
     t2 = time.perf_counter()
 
@@ -128,15 +205,14 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       assert len(next_tokens) == len(newreqs)
       pbar.update(blen.doff + len(newreqs))
       for batch_idx in range(len(newreqs)):
-        req_idx, prompt, kvcache, lora_weight = newreqs[batch_idx]
+        req_idx, prompt, kvcache = newreqs[batch_idx]
         kvcache.acquire_one()
         req = RequestContext(
             req_idx=req_idx,
             kvcache=kvcache,
-            lora_weight=lora_weight,
             output=[next_tokens[batch_idx]],
             encode_latency=t2 - t1,
-            decode_start_at=t1,
+            decode_start_at=0.0,
             decode_latency=0.0,
         )
         new_workset.append(req)
@@ -149,6 +225,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       for batch_idx in range(len(workset)):
         req = workset[batch_idx]
         req.output.append(next_tokens[batch_idx])
+        if req.decode_start_at == 0.0:
+          req.decode_start_at = t1
         if len(req.output) == rs.output_lens[req.req_idx]:
           req.decode_latency = t2 - req.decode_start_at
           req.kvcache.release()
@@ -156,7 +234,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
         else:
           new_workset.append(req)
           req.kvcache.acquire_one()
-
+    # Sort workset by lora_idx
+    new_workset.sort(key=lambda req: rs.lora_idx[req.req_idx])
     workset = new_workset
   t_end = time.perf_counter()
   pbar.close()
@@ -170,7 +249,7 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 
 
 def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
-                          textgen_cfg: TextGenConfig, rs: RequestSet,
+                          textgen_cfg: TextGenConfig, rs: LoraRequestSet,
                           use_deepspeed: bool) -> TextGenBenchResult:
   import peft
   from transformers import LlamaConfig, LlamaForCausalLM
@@ -266,7 +345,7 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 @torch.inference_mode()
 def lora_hf_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                 textgen_cfg: TextGenConfig,
-                rs: RequestSet) -> TextGenBenchResult:
+                rs: LoraRequestSet) -> TextGenBenchResult:
   return _lora_hf_bs1_internal(
       model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=False)
 
@@ -274,7 +353,7 @@ def lora_hf_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 @torch.inference_mode()
 def lora_ds_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                 textgen_cfg: TextGenConfig,
-                rs: RequestSet) -> TextGenBenchResult:
+                rs: LoraRequestSet) -> TextGenBenchResult:
   return _lora_hf_bs1_internal(
       model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=True)
 
@@ -308,40 +387,86 @@ def bench_one():
   parser.add_argument("--system", choices=BENCH_FN.keys(), default="punica")
   parser.add_argument("--model", choices=MODEL_CFGS.keys(), default="7b")
   parser.add_argument("--lora-rank", type=int, default=16)
+  parser.add_argument("--lora-popularity", default="uniform")
   parser.add_argument("--batch-size", type=int, default=16)
   parser.add_argument("--num-batches", type=int, default=10)
   parser.add_argument("--maxlen", type=int, default=2048)
   parser.add_argument(
       "--dtype", choices=["float16", "bfloat16"], default="float16")
   parser.add_argument("--device", default="cuda:0")
+  parser.add_argument("--save-to")
   args = parser.parse_args()
   bench_fn = BENCH_FN[args.system]
   model_cfg = MODEL_CFGS[args.model]
   model_cfg.dtype = args.dtype
   model_cfg.device = args.device
 
-  rs = generate_request_set(
-      num_requests=args.batch_size * args.num_batches, maxlen=args.maxlen)
+  rs = generate_lora_request_set(
+      num_requests=args.batch_size * args.num_batches,
+      maxlen=args.maxlen,
+      lora_popularity=args.lora_popularity,
+  )
   textgen_cfg = TextGenConfig(batch_size=args.batch_size)
   lora_cfg = LoraConfig(rank=args.lora_rank)
   res = bench_fn(model_cfg, lora_cfg, textgen_cfg, rs)
 
-  t = res.encode_latency / rs.prompt_lens
-  print("num_requests:", len(rs))
-  print("batch_size:", textgen_cfg.batch_size)
+  d = dict(
+      # Setup
+      system=args.system,
+      model=args.model,
+      lora_rank=args.lora_rank,
+      lora_popularity=args.lora_popularity,
+      batch_size=args.batch_size,
+      num_batches=args.num_batches,
+      maxlen=args.maxlen,
+      dtype=args.dtype,
+
+      # Derived from setup
+      num_requests=len(rs),
+      num_lora_models=rs.num_lora_models,
+      total_prompt=int(rs.prompt_lens.sum()),
+      total_new=int(rs.output_lens.sum()),
+
+      # Result
+      encode_req_avg=res.encode_latency.mean(),
+      encode_req_std=res.encode_latency.std(),
+      encode_avg=(res.encode_latency / rs.prompt_lens).mean(),
+      encode_std=(res.encode_latency / rs.prompt_lens).std(),
+      decode_avg=(res.decode_latency / rs.output_lens).mean(),
+      decode_std=(res.decode_latency / rs.output_lens).std(),
+      duration=res.duration,
+      throughput=(rs.prompt_lens.sum() + rs.output_lens.sum()) / res.duration,
+  )
+
+  print("num_requests:", d["num_requests"])
+  print("batch_size:", d["batch_size"])
+  print("lora_popularity:", d["lora_popularity"])
+  print("num_lora_models:", d["num_lora_models"])
   print(
       "encode_latency:",
-      f"{res.encode_latency.mean()*1e3:.3f}ms ± {res.encode_latency.std()*1e3:.3f}ms per request;",
-      f"{t.mean()*1e3:.3f}ms ± {t.std()*1e3:.3f}ms per token")
-  t = res.decode_latency / rs.output_lens
+      f"{d['encode_avg']*1e3:.3f}ms ± {d['encode_std']*1e3:.3f}ms per token;",
+      f"{d['encode_req_avg']*1e3:.3f}ms ± {d['encode_req_std']*1e3:.3f}ms per request"
+  )
   print("decode_latency:",
-        f"{t.mean()*1e3:.3f}ms ± {t.std()*1e3:.3f}ms per token")
-  print("total prompt tokens:", rs.prompt_lens.sum())
-  print("total new tokens:", rs.output_lens.sum())
-  print("duration:", f"{res.duration:.3f}s")
-  print(
-      "throughput ((prompt+new)/duration):",
-      f"{(rs.prompt_lens.sum()+rs.output_lens.sum())/res.duration:.3f} token/s")
+        f"{d['decode_avg']*1e3:.3f}ms ± {d['decode_std']*1e3:.3f}ms per token")
+  print("total prompt tokens:", d["total_prompt"])
+  print("total new tokens:", d["total_new"])
+  print("duration:", f"{d['duration']:.3f}s")
+  print("throughput ((prompt+new)/duration):", f"{d['throughput']:.3f} token/s")
+
+  if args.save_to:
+    out_path = pathlib.Path(args.save_to)
+  else:
+    this_file = pathlib.Path(__file__)
+    project_root = this_file.parents[1]
+    now = datetime.now(pytz.timezone("US/Pacific"))
+    out_filename = f"{now:%Y%m%d-%H%M%S}-{this_file.stem}.jsonl"
+    out_path = project_root / "data" / out_filename
+  out_path.parent.mkdir(parents=True, exist_ok=True)
+  with open(out_path, "a") as f:
+    json.dump(d, f)
+    f.write("\n")
+  print("saved to:", out_path)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 data/
 build/
+tmp/
 .cache/
 .hypothesis/
 __pycache__/

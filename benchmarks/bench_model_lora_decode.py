@@ -72,6 +72,7 @@ class model_lora_decode_Resources:
 @torch.inference_mode()
 def bench_model_lora_decode(f):
   num_heads_ = [32, 40]
+  num_layers_ = [32, 40]
   intermediate_size_ = [11008, 13824]
   batch_size_ = list(range(1, 37))
   seqlen_ = list(reversed(range(2048, 0, -64)))
@@ -83,16 +84,18 @@ def bench_model_lora_decode(f):
 
   all_ = list(
       itertools.product(
-          zip(num_heads_, intermediate_size_), seqlen_, batch_size_))
+          zip(num_heads_, num_layers_, intermediate_size_), seqlen_,
+          batch_size_))
   last_num_heads = 0
   model = None
-  for ((num_heads, intermediate_size), seqlen, batch_size) in (pbar :=
-                                                               tqdm(all_)):
+  for ((num_heads, num_layers, intermediate_size), seqlen,
+       batch_size) in (pbar := tqdm(all_)):
     if last_num_heads != num_heads:
       config = LlamaConfig(
           hidden_size=num_heads * head_dim,
           num_attention_heads=num_heads,
           intermediate_size=intermediate_size,
+          num_hidden_layers=num_layers,
       )
       del model
       gc_torch()
@@ -115,6 +118,7 @@ def bench_model_lora_decode(f):
     setup = dict(
         num_heads=num_heads,
         head_dim=head_dim,
+        num_layers=num_layers,
         intermediate_size=intermediate_size,
         block_len=block_len,
         lora_rank=lora_rank,
@@ -126,8 +130,8 @@ def bench_model_lora_decode(f):
 
     latency = bench(
         lambda: model(res.input_ids, res.blen, None, res.kv, res.lora),
-        warmup=2,
-        repeat=10)
+        warmup=1,
+        repeat=5)
     res.release()
     del res
 
