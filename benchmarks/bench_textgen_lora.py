@@ -248,14 +248,11 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   )
 
 
-def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
-                          textgen_cfg: TextGenConfig, rs: LoraRequestSet,
-                          use_deepspeed: bool) -> TextGenBenchResult:
+def _lora_hf_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+                      textgen_cfg: TextGenConfig, rs: LoraRequestSet,
+                      use_deepspeed: bool) -> TextGenBenchResult:
   import peft
   from transformers import LlamaConfig, LlamaForCausalLM
-
-  if textgen_cfg.batch_size != 1:
-    raise ValueError("batch_size must be 1.")
 
   torch.manual_seed(0xabcdabcd987)
   device = torch.device(model_cfg.device)
@@ -276,7 +273,7 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
             task_type=peft.TaskType.CAUSAL_LM,
             inference_mode=True,
             r=lora_cfg.rank,
-            lora_alpha=lora_cfg.alpha,
+            lora_alpha=lora_cfg.rank,
             lora_dropout=0.0,
             bias="none",
             target_modules=[
@@ -294,7 +291,7 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   pbar = tqdm(
       total=rs.output_lens.sum() + rs.prompt_lens.sum(),
       unit="token",
-      desc="hf_bs1" if not use_deepspeed else "ds_bs1")
+      desc="hf" if not use_deepspeed else "ds")
   model_kwargs = dict(
       use_cache=True,
       output_attentions=False,
@@ -304,11 +301,22 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   encode_latency = []
   decode_latency = []
   t_start = time.perf_counter()
-  for idx in range(len(rs)):
+  batch_beg = 0
+  while batch_beg < len(rs):
+    # Find consecutive requests with the same lora_idx
+    batch_end = batch_beg + 1
+    while (batch_end < len(rs) and
+           (batch_end - batch_beg) < textgen_cfg.batch_size and
+           rs.lora_idx[batch_beg] == rs.lora_idx[batch_end]):
+      batch_end += 1
+    req_indicies = list(range(batch_beg, batch_end))
+    bs = len(req_indicies)
+
     # Encode
     input_ids = [
         torch.randint(
             0, 32000, (rs.prompt_lens[idx],), dtype=torch.long, device=device)
+        for idx in req_indicies
     ]
     input_ids = torch.nn.utils.rnn.pad_sequence(
         input_ids, batch_first=True, padding_value=0.0)
@@ -316,22 +324,31 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
     ret = model(input_ids=input_ids, **model_kwargs)
     past_key_values = ret.past_key_values
     input_ids = torch.argmax(ret.logits[:, -1, :], dim=-1, keepdim=True)
-    outputs = [input_ids.cpu().item()]
+    outputs = [[t] for t in input_ids.view(bs).cpu().numpy()]
     t1 = time.perf_counter()
-    pbar.update(rs.prompt_lens[idx] + 1)
-    encode_latency.append(t1 - t0)
+    pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))
+    for _ in range(bs):
+      encode_latency.append(t1 - t0)
 
     # Decode
     t2 = time.perf_counter()
-    for _ in range(rs.output_lens[idx] - 1):
+    dl = [None] * bs
+    for _ in range(max(rs.output_lens[idx] - 1 for idx in req_indicies)):
       ret = model(
           input_ids=input_ids, past_key_values=past_key_values, **model_kwargs)
       past_key_values = ret.past_key_values
       input_ids = torch.argmax(ret.logits, dim=-1)
-      next_token = input_ids.cpu().item()
-      outputs.append(next_token)
-      pbar.update()
-    decode_latency.append(time.perf_counter() - t2)
+      next_tokens = input_ids.view(bs).cpu().numpy()
+      for i in range(bs):
+        outlen = rs.output_lens[req_indicies[i]]
+        if len(outputs[i]) < outlen:
+          outputs[i].append(next_tokens[i])
+          pbar.update()
+          if len(outputs[i]) == outlen:
+            dl[i] = time.perf_counter() - t2
+    decode_latency.extend(dl)
+
+    batch_beg = batch_end
   t_end = time.perf_counter()
   pbar.close()
 
@@ -343,25 +360,220 @@ def _lora_hf_bs1_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 
 
 @torch.inference_mode()
-def lora_hf_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
-                textgen_cfg: TextGenConfig,
-                rs: LoraRequestSet) -> TextGenBenchResult:
-  return _lora_hf_bs1_internal(
+def lora_hf(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+            textgen_cfg: TextGenConfig,
+            rs: LoraRequestSet) -> TextGenBenchResult:
+  return _lora_hf_internal(
       model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=False)
 
 
 @torch.inference_mode()
-def lora_ds_bs1(model_cfg: ModelConfig, lora_cfg: LoraConfig,
-                textgen_cfg: TextGenConfig,
-                rs: LoraRequestSet) -> TextGenBenchResult:
-  return _lora_hf_bs1_internal(
+def lora_ds(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+            textgen_cfg: TextGenConfig,
+            rs: LoraRequestSet) -> TextGenBenchResult:
+  return _lora_hf_internal(
       model_cfg, lora_cfg, textgen_cfg, rs, use_deepspeed=True)
+
+
+@torch.inference_mode()
+def lora_ft_backbone(model_cfg: ModelConfig, _lora_cfg: LoraConfig,
+                     textgen_cfg: TextGenConfig,
+                     rs: LoraRequestSet) -> TextGenBenchResult:
+  from .fastertransformer import build_ext
+  ft = build_ext()
+  rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  model = ft.FtLlama(
+      num_heads=model_cfg.num_heads,
+      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      inter_size=model_cfg.intermediate_size,
+      num_layers=model_cfg.num_layers,
+      dtype=model_cfg.dtype,
+      device_id=torch.device(model_cfg.device).index,
+  )
+
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="ft")
+  encode_latency = []
+  decode_latency = []
+  t_start = time.perf_counter()
+  batch_beg = 0
+  while batch_beg < len(rs):
+    # Find consecutive requests with the same lora_idx
+    batch_end = batch_beg + 1
+    while (batch_end < len(rs) and
+           (batch_end - batch_beg) < textgen_cfg.batch_size and
+           rs.lora_idx[batch_beg] == rs.lora_idx[batch_end]):
+      batch_end += 1
+    req_indicies = list(range(batch_beg, batch_end))
+    bs = len(req_indicies)
+
+    # Decode Callback
+    outlens = [0] * bs
+    dl = [None] * bs
+    t_decode_start = None
+
+    def decode_cb():
+      nonlocal t_decode_start
+      t3 = time.perf_counter()
+      if t_decode_start is None:
+        t_decode_start = t3
+        pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))
+
+      for i in range(bs):
+        target_len = rs.output_lens[req_indicies[i]]
+        if outlens[i] < target_len:
+          outlens[i] += 1
+          pbar.update()
+          if outlens[i] == target_len:
+            dl[i] = t3 - t_decode_start
+
+    # Encode and decode all
+    input_ids = [
+        rng.integers(0, 32000, (rs.prompt_lens[idx],), dtype=int).tolist()
+        for idx in req_indicies
+    ]
+    max_output_lens = max(rs.output_lens[idx] for idx in req_indicies)
+    t0 = time.perf_counter()
+    model.forward(input_ids, max_output_lens, decode_cb)
+    for _ in range(len(req_indicies)):
+      encode_latency.append(t_decode_start - t0)
+    decode_latency.extend(dl)
+    batch_beg = batch_end
+  t_end = time.perf_counter()
+  pbar.close()
+
+  return TextGenBenchResult(
+      encode_latency=np.array(encode_latency),
+      decode_latency=np.array(decode_latency),
+      duration=t_end - t_start,
+  )
+
+
+@torch.inference_mode()
+def lora_vllm_backbone(model_cfg: ModelConfig, lora_cfg: LoraConfig,
+                       textgen_cfg: TextGenConfig,
+                       rs: LoraRequestSet) -> TextGenBenchResult:
+  import logging
+  import vllm.transformers_utils.config
+  from transformers import LlamaConfig
+  from vllm import EngineArgs, LLMEngine, SamplingParams
+
+  class FakeModelConfig(LlamaConfig):
+
+    def __init__(self, **kwargs):
+      kwargs["num_hidden_layers"] = model_cfg.num_layers
+      kwargs["num_attention_heads"] = model_cfg.num_heads
+      kwargs["hidden_size"] = model_cfg.hidden_size
+      kwargs["intermediate_size"] = model_cfg.intermediate_size
+      kwargs["torch_dtype"] = model_cfg.dtype
+      super().__init__(**kwargs)
+
+  vllm.transformers_utils.config._CONFIG_REGISTRY["llama"] = FakeModelConfig
+  logging.getLogger("vllm").setLevel(logging.WARNING)
+  rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  llm_engine = LLMEngine.from_engine_args(
+      EngineArgs(
+          model="decapoda-research/llama-13b-hf",
+          tokenizer="hf-internal-testing/llama-tokenizer",
+          dtype="float16",
+          load_format="dummy",
+      ))
+
+  @dataclasses.dataclass
+  class RequestContext:
+    req_idx: int
+
+    encode_start_at: float
+    encode_latency: float
+    decode_start_at: float
+    decode_latency: float
+
+  next_req_idx = 0
+  workset: dict[int, RequestContext] = {}
+  done = []
+  pbar = tqdm(
+      total=rs.output_lens.sum() + rs.prompt_lens.sum(),
+      unit="token",
+      desc="vllm")
+
+  t_start = time.perf_counter()
+  while len(done) != len(rs):
+    # Add at most one new request to workset
+    if len(workset) < textgen_cfg.batch_size and next_req_idx < len(rs):
+      # Only add if new model's lora_idx is the same as the current workset
+      if workset:
+        workset_li = rs.lora_idx[next(iter(workset.values())).req_idx]
+        li = rs.lora_idx[next_req_idx]
+        can_add = workset_li == li
+      else:
+        can_add = True
+
+      if can_add:
+        idx = next_req_idx
+        next_req_idx += 1
+        prompt_ids = rng.integers(
+            0, 32000, (rs.prompt_lens[idx],), dtype=np.int32).tolist()
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=0.0,
+            ignore_eos=True,
+            max_tokens=rs.output_lens[idx])
+        t0 = time.perf_counter()
+        reqid = str(idx)
+        llm_engine.add_request(
+            reqid,
+            prompt=None,
+            sampling_params=sampling_params,
+            prompt_token_ids=prompt_ids)
+        workset[reqid] = RequestContext(
+            req_idx=idx,
+            encode_start_at=t0,
+            encode_latency=0.0,
+            decode_start_at=0.0,
+            decode_latency=0.0,
+        )
+
+    # Run vLLM
+    step_outputs = llm_engine.step()
+
+    # Post processing
+    t1 = time.perf_counter()
+    for out in step_outputs:
+      ctx = workset[out.request_id]
+      out_tokens = out.outputs[0].token_ids
+      if len(out_tokens) == 1:
+        ctx.encode_latency = t1 - ctx.encode_start_at
+        ctx.decode_start_at = t1
+        pbar.update(rs.prompt_lens[ctx.req_idx] + 1)
+      else:
+        pbar.update(1)
+
+      if out.finished:
+        assert len(out_tokens) == rs.output_lens[ctx.req_idx]
+      if len(out_tokens) == rs.output_lens[ctx.req_idx]:
+        assert out.finished
+        ctx.decode_latency = t1 - ctx.decode_start_at
+        done.append(ctx)
+        del workset[out.request_id]
+  t_end = time.perf_counter()
+  pbar.close()
+
+  done.sort(key=lambda req: req.req_idx)
+  return TextGenBenchResult(
+      encode_latency=np.array([req.encode_latency for req in done]),
+      decode_latency=np.array([req.decode_latency for req in done]),
+      duration=t_end - t_start,
+  )
 
 
 BENCH_FN = {
     "punica": lora_punica,
-    "hf_bs1": lora_hf_bs1,
-    "ds_bs1": lora_ds_bs1,
+    "hf": lora_hf,
+    "ds": lora_ds,
+    "ft_backbone": lora_ft_backbone,
+    "vllm_backbone": lora_vllm_backbone,
 }
 
 MODEL_CFGS = {
