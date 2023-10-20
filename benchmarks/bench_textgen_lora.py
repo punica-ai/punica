@@ -23,6 +23,7 @@ from .bench_textgen import (
     TextGenConfig,
     generate_request_set,
 )
+from .benchmark_utils import gc_torch, get_lora_lens
 
 
 @dataclasses.dataclass
@@ -34,33 +35,6 @@ class LoraRequestSet:
 
   def __len__(self):
     return len(self.prompt_lens)
-
-
-def get_lora_lens(bs: int, popularity: str) -> list[int]:
-  if popularity == "bmm":
-    return [bs]
-  if popularity == "bgmv":
-    return [1] * bs
-  if popularity == "uniform":
-    n = int(np.ceil(np.sqrt(bs)))
-    lens = np.array([bs // n] * n)
-    while True:
-      diff = bs - lens.sum()
-      if diff == 0:
-        break
-      lens[:abs(diff)] += np.sign(diff)
-    return lens.tolist()
-  if popularity.startswith("zipf:"):
-    alpha = float(popularity.split(":")[1])
-    assert alpha > 1
-    lens = [1]
-    a = alpha
-    while sum(lens) + int(np.floor(a)) < bs:
-      lens.append(int(np.floor(a)))
-      a *= alpha
-    lens.append(bs - sum(lens))
-    return sorted(lens, reverse=True)
-  raise KeyError(popularity)
 
 
 def generate_lora_request_set(
@@ -301,6 +275,7 @@ def _lora_hf_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   encode_latency = []
   decode_latency = []
   t_start = time.perf_counter()
+  gc_step = 0
   batch_beg = 0
   while batch_beg < len(rs):
     # Find consecutive requests with the same lora_idx
@@ -334,6 +309,9 @@ def _lora_hf_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
     t2 = time.perf_counter()
     dl = [None] * bs
     for _ in range(max(rs.output_lens[idx] - 1 for idx in req_indicies)):
+      gc_step += 1
+      if gc_step % 16 == 0:
+        gc_torch()
       ret = model(
           input_ids=input_ids, past_key_values=past_key_values, **model_kwargs)
       past_key_values = ret.past_key_values
@@ -399,6 +377,7 @@ def lora_ft_backbone(model_cfg: ModelConfig, _lora_cfg: LoraConfig,
   decode_latency = []
   t_start = time.perf_counter()
   batch_beg = 0
+  gc_step = 0
   while batch_beg < len(rs):
     # Find consecutive requests with the same lora_idx
     batch_end = batch_beg + 1
@@ -415,8 +394,13 @@ def lora_ft_backbone(model_cfg: ModelConfig, _lora_cfg: LoraConfig,
     t_decode_start = None
 
     def decode_cb():
-      nonlocal t_decode_start
+      nonlocal t_decode_start, gc_step
       t3 = time.perf_counter()
+
+      gc_step += 1
+      if gc_step % 16 == 0:
+        gc_torch()
+
       if t_decode_start is None:
         t_decode_start = t3
         pbar.update(sum(rs.prompt_lens[idx] + 1 for idx in req_indicies))

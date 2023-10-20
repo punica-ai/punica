@@ -19,7 +19,7 @@ from punica.models.llama_lora import (
 from punica.utils.cat_tensor import BatchLenInfo
 from punica.utils.kvcache import BatchedKvCache, KvCache, KvPool
 
-from .benchmark_utils import bench, gc_torch
+from .benchmark_utils import bench, gc_torch, get_lora_lens
 
 
 class layer_lora_decode_Resources:
@@ -29,6 +29,7 @@ class layer_lora_decode_Resources:
       config: LlamaConfig,
       block_len: int,
       lora_rank: int,
+      lora_popularity: int,
       seqlens: list[int],
       dtype: torch.dtype,
       device: torch.device,
@@ -55,15 +56,13 @@ class layer_lora_decode_Resources:
     self.kv = BatchedKvCache(kv_list)
     self.blen = BatchLenInfo([], bs, device)
 
-    num_lora_models = int(np.ceil(np.sqrt(bs)))
-    self.num_lora_models = num_lora_models
+    lora_lens = get_lora_lens(bs, lora_popularity)
+    self.num_lora_models = len(lora_lens)
     weights = [
         LlamaLoraWeight(config, lora_rank, dtype, device)
-        for _ in range(num_lora_models)
+        for _ in range(self.num_lora_models)
     ]
-    lens = [int(np.floor(np.sqrt(bs)))] * (num_lora_models - 1)
-    lens.append(bs - sum(lens))
-    self.lora = BatchedLlamaLoraWeight(weights, lens)
+    self.lora = BatchedLlamaLoraWeight(weights, lora_lens)
 
   def release(self):
     for kvcache in self.kv_list:
@@ -74,9 +73,8 @@ class layer_lora_decode_Resources:
 def bench_layer_lora_decode(f):
   num_heads_ = [32, 40]
   intermediate_size_ = [11008, 13824]
-  batch_size_ = [
-      1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64
-  ]
+  pop_ = ["bgmv", "bmm", "uniform", "zipf:1.5"]
+  batch_size_ = list(range(1, 64))
   seqlen_ = list(reversed(range(2048, 0, -64)))
   dtype = torch.float16
   device = torch.device("cuda:0")
@@ -86,15 +84,16 @@ def bench_layer_lora_decode(f):
 
   all_ = list(
       itertools.product(
-          zip(num_heads_, intermediate_size_), seqlen_, batch_size_))
+          zip(num_heads_, intermediate_size_), pop_, seqlen_, batch_size_))
   last_num_heads = 0
-  for ((num_heads, intermediate_size), seqlen, batch_size) in (pbar :=
-                                                               tqdm(all_)):
+  for ((num_heads, intermediate_size), pop, seqlen, batch_size) in (pbar :=
+                                                                    tqdm(all_)):
     if last_num_heads != num_heads:
       config = LlamaConfig(
           hidden_size=num_heads * head_dim,
           num_attention_heads=num_heads,
           intermediate_size=intermediate_size,
+          num_hidden_layers=1,
       )
       default_dtype = torch.get_default_dtype()
       torch.set_default_dtype(dtype)
@@ -108,6 +107,7 @@ def bench_layer_lora_decode(f):
         config=config,
         block_len=block_len,
         lora_rank=lora_rank,
+        lora_popularity=pop,
         seqlens=[seqlen] * batch_size,
         dtype=dtype,
         device=device,
@@ -118,6 +118,7 @@ def bench_layer_lora_decode(f):
         intermediate_size=intermediate_size,
         block_len=block_len,
         lora_rank=lora_rank,
+        lora_popularity=pop,
         num_lora_models=res.num_lora_models,
         seqlen=seqlen,
         batch_size=batch_size,
@@ -126,8 +127,8 @@ def bench_layer_lora_decode(f):
 
     latency = bench(
         lambda: model(res.hidden_states, res.blen, None, res.kv, res.lora),
-        warmup=100,
-        repeat=500)
+        warmup=10,
+        repeat=50)
     res.release()
 
     result = {

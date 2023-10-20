@@ -11,14 +11,13 @@ from tqdm import tqdm
 
 import punica.ops
 
-from .benchmark_utils import bench, gc_torch
+from .benchmark_utils import bench, gc_torch, get_lora_lens
 
 
 @torch.inference_mode()
 def bench_sgmv(f):
-  # bs_ = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64]
   bs_ = list(range(1, 65))
-  pop_ = ["bmm", "bgmv", "uniform", "8xN"]
+  pop_ = ["bmm", "bgmv", "uniform", "zipf:1.5", "Nx8"]
   h1 = 16
   h2 = 4096
   num_layers = 1
@@ -27,18 +26,12 @@ def bench_sgmv(f):
 
   all_ = list(itertools.product(pop_, bs_))
   for pop, bs in (pbar := tqdm(all_)):
-    if pop == "bmm":
-      problem_sizes = [bs]
-    elif pop == "bgmv":
-      problem_sizes = [1] * bs
-    elif pop == "uniform":
-      sqrt = np.sqrt(bs)
-      problem_sizes = [int(np.floor(sqrt))] * (int(np.ceil(sqrt)) - 1)
-      problem_sizes.append(bs - sum(problem_sizes))
-    elif pop == "8xN":
+    if pop == "Nx8":
       if bs % 8 != 0:
         continue
       problem_sizes = [(bs // 8)] * 8
+    else:
+      problem_sizes = get_lora_lens(bs, pop)
 
     setup = dict(
         h1=h1,
@@ -68,8 +61,8 @@ def bench_sgmv(f):
 
     latency = bench(
         lambda: punica.ops.sgmv_cutlass(y, x, w_ptr, s, layer_idx=0),
-        warmup=100,
-        repeat=500)
+        warmup=200,
+        repeat=1000)
 
     result = {
         "setup": setup,

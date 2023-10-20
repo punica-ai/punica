@@ -100,3 +100,30 @@ def batched(iterable, n):
   it = iter(iterable)
   while batch := list(itertools.islice(it, n)):
     yield batch
+
+
+def get_lora_lens(bs: int, popularity: str) -> list[int]:
+  if popularity == "bmm":
+    return [bs]
+  if popularity == "bgmv":
+    return [1] * bs
+  if popularity == "uniform":
+    n = int(np.ceil(np.sqrt(bs)))
+    lens = np.array([bs // n] * n)
+    while True:
+      diff = bs - lens.sum()
+      if diff == 0:
+        break
+      lens[:abs(diff)] += np.sign(diff)
+    return lens.tolist()
+  if popularity.startswith("zipf:"):
+    alpha = float(popularity.split(":")[1])
+    assert alpha > 1
+    lens = []
+    a = 1
+    while sum(lens) + int(np.floor(a)) < bs:
+      lens.append(int(np.floor(a)))
+      a *= alpha
+    lens.append(bs - sum(lens))
+    return sorted(lens, reverse=True)
+  raise KeyError(popularity)
