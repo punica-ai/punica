@@ -1,5 +1,6 @@
 set(bench_srcs
     sgmv.cu
+    sgmv_flashinfer.cu
 )
 
 foreach(bench_src IN LISTS bench_srcs)
