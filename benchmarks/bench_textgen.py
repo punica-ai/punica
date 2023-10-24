@@ -14,7 +14,7 @@ import scipy.stats
 import torch
 from tqdm.auto import tqdm
 
-from .benchmark_utils import batched
+from benchmarks.benchmark_utils import batched
 
 
 @dataclasses.dataclass

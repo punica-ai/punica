@@ -6,7 +6,7 @@ import torch
 import punica.ops
 import punica.ops._kernels
 
-from .benchmark_utils import bench, gc_torch
+from benchmarks.benchmark_utils import bench, gc_torch
 
 
 class add_lora_Resources:

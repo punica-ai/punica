@@ -6,6 +6,8 @@ from torch import nn
 from transformers.models.llama.modeling_llama import LlamaMLP, LlamaAttention as LlamaAttentionHF
 
 from punica.models.llama import LlamaAttention as LlamaAttentionPunica
+from punica.models.llama_lora import LlamaAttentionWithLora as LlamaAttentionPunicaLora, \
+    LlamaMlpWithLora as LlamaMlpPunicaLora
 
 
 class ReplaceWithTensorSlicing:
@@ -140,11 +142,11 @@ class AutoTP:
     def update_mp_params(self, child):
         if getattr(child, "replaced", False) == True:
             return
-        if isinstance(child, LlamaMLP):
+        if isinstance(child, LlamaMLP) or isinstance(child, LlamaMlpPunicaLora):
             params_list = ["intermediate_size"]
         elif isinstance(child, LlamaAttentionHF):
             params_list = ["hidden_size", "num_heads", "num_key_value_heads"]
-        elif isinstance(child, LlamaAttentionPunica):
+        elif isinstance(child, LlamaAttentionPunica) or isinstance(child, LlamaAttentionPunicaLora):
             params_list = ["hidden_size", "num_heads"]
         for param in params_list:
             if hasattr(child, param):
@@ -183,11 +185,12 @@ class AutoTP:
 
     def replace_module(self, r_module):
         for _, child in r_module.named_children():
-            if isinstance(child, LlamaMLP):
+            if isinstance(child, LlamaMLP) or isinstance(child, LlamaMlpPunicaLora):
                 setattr(child, "down_proj", self.replace_linear_all_reduce(child.down_proj))
                 setattr(child, "gate_proj", self.replace_linear(child.gate_proj))
                 setattr(child, "up_proj", self.replace_linear(child.up_proj))
-            elif isinstance(child, LlamaAttentionHF) or isinstance(child, LlamaAttentionPunica):
+            elif isinstance(child, LlamaAttentionHF) or isinstance(child, LlamaAttentionPunica) \
+                or isinstance(child, LlamaAttentionPunicaLora):
                 setattr(child, "q_proj", self.replace_linear(child.q_proj))
                 setattr(child, 'k_proj', self.replace_linear(child.k_proj))
                 setattr(child, 'v_proj', self.replace_linear(child.v_proj))

@@ -15,15 +15,19 @@ from datetime import datetime
 import numpy as np
 import pytz
 import torch
+import torch.distributed as dist
 from tqdm.auto import tqdm
 
-from .bench_textgen import (
+from benchmarks.bench_textgen import (
     ModelConfig,
     TextGenBenchResult,
     TextGenConfig,
     generate_request_set,
 )
-from .benchmark_utils import gc_torch, get_lora_lens
+from benchmarks.benchmark_utils import gc_torch, get_lora_lens
+
+from punica.utils import create_tensor_parallel_group, init_distributed, is_distributed, get_local_rank_from_launcher
+from punica.models.tensor_parallel import AutoTP
 
 
 @dataclasses.dataclass
@@ -83,13 +87,24 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       intermediate_size=model_cfg.intermediate_size,
       num_hidden_layers=model_cfg.num_layers,
   )
-  with device:
-    model = LlamaForCausalLMWithLora(llama_config).to(device)
-  torch.set_default_dtype(default_dtype)
+  # model = LlamaForCausalLMWithLora(llama_config)
+  model = LlamaForCausalLMWithLora.from_pretrained("meta-llama/Llama-2-7b-chat-hf", low_cpu_mem_usage=True, torch_dtype=dtype)
+    
+  if is_distributed():
+    init_distributed()
+    mp_group = create_tensor_parallel_group()
+    mp_size = len(dist.get_process_group_ranks(mp_group))
+    auto_tp = AutoTP(mp_group, mp_size)
+    model = auto_tp.replace_module(model)
+    llama_config.num_attention_heads //= mp_size
+  else:
+    mp_size = 1
+  model = model.to(device)
 
+  torch.set_default_dtype(default_dtype)
   kvpool = KvPool(
       num_layers=model_cfg.num_layers,
-      num_heads=model_cfg.num_heads,
+      num_heads=model_cfg.num_heads // mp_size,
       head_dim=model_cfg.hidden_size // model_cfg.num_heads,
       capacity=textgen_cfg.batch_size * 2048 // 16,
       block_len=16,
@@ -595,7 +610,13 @@ def bench_one():
   bench_fn = BENCH_FN[args.system]
   model_cfg = MODEL_CFGS[args.model]
   model_cfg.dtype = args.dtype
-  model_cfg.device = args.device
+
+  if is_distributed():
+    local_rank = get_local_rank_from_launcher()
+    torch.cuda.set_device(local_rank)
+    model_cfg.device = f"cuda:{local_rank}"
+  else:
+    model_cfg.device = args.device
 
   rs = generate_lora_request_set(
       num_requests=args.batch_size * args.num_batches,

@@ -214,11 +214,11 @@ class LlamaMlpWithLora(nn.Module):
   def __init__(self, config: LlamaConfig, layer_idx: int):
     super().__init__()
     self.layer_idx = layer_idx
-    hidden_size = config.hidden_size
-    intermediate_size = config.intermediate_size
-    self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-    self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
-    self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+    self.hidden_size = config.hidden_size
+    self.intermediate_size = config.intermediate_size
+    self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+    self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+    self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
     self.act_fn = ACT2FN[config.hidden_act]
 
   def forward(
