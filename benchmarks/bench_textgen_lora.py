@@ -87,8 +87,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       intermediate_size=model_cfg.intermediate_size,
       num_hidden_layers=model_cfg.num_layers,
   )
-  # model = LlamaForCausalLMWithLora(llama_config)
-  model = LlamaForCausalLMWithLora.from_pretrained("meta-llama/Llama-2-7b-chat-hf", low_cpu_mem_usage=True, torch_dtype=dtype)
+  model = LlamaForCausalLMWithLora(llama_config)
+  #model = LlamaForCausalLMWithLora.from_pretrained("meta-llama/Llama-2-7b-chat-hf", low_cpu_mem_usage=True, torch_dtype=dtype)
     
   if is_distributed():
     init_distributed()
