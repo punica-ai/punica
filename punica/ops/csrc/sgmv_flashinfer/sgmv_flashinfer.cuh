@@ -1,3 +1,4 @@
+#pragma once
 #include <cooperative_groups.h>
 
 #include "cp_async.cuh"

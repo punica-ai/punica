@@ -8,6 +8,7 @@
 #include "flashinfer_adapter/flashinfer_config.h"
 #include "rms_norm/rms_norm.h"
 #include "sgmv/sgmv.h"
+#include "sgmv_flashinfer/sgmv_config.h"
 
 namespace {
 
@@ -323,6 +324,46 @@ void dispatch_sgmv_cutlass(torch::Tensor y, torch::Tensor x,
   TORCH_CHECK(ok, "No suitable kernel.", " dtype=", x.scalar_type());
 }
 
+void dispatch_sgmv_shrink(torch::Tensor y, torch::Tensor x, torch::Tensor w_ptr,
+                          torch::Tensor s, torch::Tensor tmp, int layer_idx) {
+  CHECK_INPUT(y);
+  CHECK_INPUT(x);
+  CHECK_INPUT(w_ptr);
+  CHECK_INPUT(s);
+  CHECK_INPUT(tmp);
+
+  CHECK_DIM(2, y);
+  CHECK_DIM(2, x);
+  CHECK_DIM(1, w_ptr);
+  CHECK_DIM(1, s);
+  CHECK_DIM(1, tmp);
+
+  uint32_t num_problems = s.size(0) - 1;
+  uint32_t d_in = x.size(1);
+  uint32_t d_out = y.size(1);
+  CHECK_EQ(tmp.scalar_type(), at::ScalarType::Byte);
+  CHECK_EQ(tmp.size(0), 8 * 1024 * 1024);
+
+#define CASE(_T, D_OUT)                                    \
+  case D_OUT:                                              \
+    return sgmv_shrink<c_type, D_OUT>(                     \
+        (c_type*)y.data_ptr(), (c_type*)x.data_ptr(),      \
+        (c_type**)w_ptr.data_ptr(), s.data_ptr<int32_t>(), \
+        tmp.data_ptr<uint8_t>(), num_problems, d_in, layer_idx);
+
+  bool ok = DISPATCH_TORCH_DTYPE(x.scalar_type(), [&] {
+    switch (d_out) {
+      FOR_SGMV_NARROW(CASE, c_type);
+      default:
+        return false;
+    }
+  });
+
+#undef CASE
+  TORCH_CHECK(ok, "No suitable kernel.", " dtype=", x.scalar_type(),
+              " d_out=", d_out);
+}
+
 //====== rms_norm ======
 
 void dispatch_rms_norm(torch::Tensor output, torch::Tensor input,
@@ -365,5 +406,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
   m.def("sgmv_cutlass", &dispatch_sgmv_cutlass, "");
   m.def("sgmv_cutlass_tmp_size", &sgmv_tmp_size, "");
+  m.def("sgmv_shrink", &dispatch_sgmv_shrink, "");
   m.def("rms_norm", &dispatch_rms_norm, "");
 }
