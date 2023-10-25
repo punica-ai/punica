@@ -2,6 +2,7 @@
 #include <thrust/host_vector.h>
 
 #include <cmath>
+#include <iostream>
 #include <random>
 #include <vector>
 
@@ -9,19 +10,32 @@
 #include "sgmv_flashinfer/sgmv_flashinfer.cuh"
 
 template <typename T>
-void sgmv_cpu_reference(T *y, T *x, T **w, int *s, int num_problems, int d_in, int d_out,
-                        int layer_idx) {
+void sgmv_cpu_reference(T *y, T *x, T **w, int *s, int num_problems, int d_in,
+                        int d_out, int layer_idx) {
   for (int p = 0; p < num_problems; p++) {
     for (int i = s[p]; i < s[p + 1]; i++) {
       for (int j = 0; j < d_out; j++) {
         float accum = y[i * d_out + j];
         for (int k = 0; k < d_in; k++) {
-          accum += float(x[i * d_in + k]) * float(w[p][layer_idx * d_in * d_out + k * d_out + j]);
+          accum += float(x[i * d_in + k]) *
+                   float(w[p][layer_idx * d_in * d_out + k * d_out + j]);
         }
         y[i * d_out + j] = accum;
       }
     }
   }
+}
+
+template <typename T>
+std::vector<T> transpose(const std::vector<T> &x, uint32_t M, uint32_t N) {
+  std::vector<T> y(x.size());
+  assert(x.size() == M * N);
+  for (uint32_t i = 0; i < M; i++) {
+    for (uint32_t j = 0; j < N; j++) {
+      y[j * M + i] = x[i * N + j];
+    }
+  }
+  return std::move(y);
 }
 
 template <typename T>
@@ -76,14 +90,16 @@ void bench_sgmv(nvbench::state &state) {
     }
   }
   for (size_t i = 0; i < batch_size * d_out; i++) {
-    y_init[i] = dis(gen);
+    y_init[i] = 0;  // dis(gen);
   }
 
   // copy std vector x, w, y to thrust device vector
   thrust::device_vector<half> x_d(x.begin(), x.end());
   std::vector<thrust::device_vector<half>> w_all_d;
   for (size_t i = 0; i < num_loras; i++) {
-    w_all_d.emplace_back(w_all[i].begin(), w_all[i].end());
+    std::vector<half> w_all_i_trans =
+        std::move(transpose(w_all[i], d_in, d_out));
+    w_all_d.emplace_back(w_all_i_trans.begin(), w_all_i_trans.end());
   }
   thrust::device_vector<int32_t> s_d(s.begin(), s.end());
 
@@ -98,24 +114,30 @@ void bench_sgmv(nvbench::state &state) {
   }
   thrust::device_vector<half *> w_d(w_gpu_ptr.begin(), w_gpu_ptr.end());
 
-  uint32_t num_warps = 1;
-  dim3 nblks(problem_size);
+  uint32_t num_warps = d_out / 16;
+  dim3 nblks(num_problems);
   dim3 nthrs(32, num_warps);
-  uint32_t smem = 2 * sizeof(half) * (((num_warps * 16) * 256 + 256 * (num_warps * 16)));
+  constexpr uint32_t num_stages = 2;
+  constexpr uint32_t num_k_frags_per_stage = 8;
+  uint32_t smem = num_stages * 2 * sizeof(half) * num_warps * 16 *
+                  (16 * num_k_frags_per_stage);
   cudaStream_t stream = nullptr;
 
   for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
     // call cpu_reference function
     std::vector<half> y_cpu_ref(y_init.begin(), y_init.end());
-    sgmv_cpu_reference(y_cpu_ref.data(), x.data(), w.data(), s.data(), num_problems, d_in, d_out,
-                       layer_idx);
+    sgmv_cpu_reference(y_cpu_ref.data(), x.data(), w.data(), s.data(),
+                       num_problems, d_in, d_out, layer_idx);
 
     // call sgmv function
     thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
 
-    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16><<<nblks, nthrs, smem, stream>>>(
-        thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems);
+    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16>
+        <<<nblks, nthrs, smem, stream>>>(thrust::raw_pointer_cast(y_d.data()),
+                                         thrust::raw_pointer_cast(x_d.data()),
+                                         thrust::raw_pointer_cast(w_d.data()),
+                                         thrust::raw_pointer_cast(s_d.data()),
+                                         num_problems);
 
     // copy thrust device_vector y_d to std vector y_h
     thrust::host_vector<half> y_h = y_d;
@@ -125,24 +147,28 @@ void bench_sgmv(nvbench::state &state) {
       if (!isclose(float(y_h[i]), float(y_cpu_ref[i]), 1e-3, 1e-3)) {
         state.skip("y_h and y_cpu_ref are not close");
         printf("layer_idx=%i, i=%zu, ref=%f, our=%f, diff=%f\n", layer_idx, i,
-        float(y_cpu_ref[i]),
-               float(y_h[i]), float(y_h[i]) - float(y_cpu_ref[i]));
+               float(y_cpu_ref[i]), float(y_h[i]),
+               float(y_h[i]) - float(y_cpu_ref[i]));
         return;
       }
     }
   }
-  state.add_global_memory_reads<char>(batch_size * d_in * sizeof(half)              // x
-                                      + num_problems * d_in * d_out * sizeof(half)  // w
-                                      + (num_problems + 1) * sizeof(int32_t)        // s
+  state.add_global_memory_reads<char>(
+      batch_size * d_in * sizeof(half)              // x
+      + num_problems * d_in * d_out * sizeof(half)  // w
+      + (num_problems + 1) * sizeof(int32_t)        // s
   );
   state.add_global_memory_writes<char>(batch_size * d_out * sizeof(half));
 
   thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch &) {
     int layer_idx = 0;
-    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16><<<nblks, nthrs, smem, stream>>>(
-        thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems);
+    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16>
+        <<<nblks, nthrs, smem, stream>>>(thrust::raw_pointer_cast(y_d.data()),
+                                         thrust::raw_pointer_cast(x_d.data()),
+                                         thrust::raw_pointer_cast(w_d.data()),
+                                         thrust::raw_pointer_cast(s_d.data()),
+                                         num_problems);
   });
 }
 
@@ -151,9 +177,9 @@ int narrow_dim = 16;
 
 std::vector<long> num_problems = {1,  2,  3,  4,  5,  6,  7,  8,  10, 12,
                                   14, 16, 20, 24, 28, 32, 40, 48, 56, 64};
-std::vector<std::string> problem_size = {"1",  "2",  "3",  "4",  "5",  "6",  "7",
-                                         "8",  "10", "12", "14", "16", "20", "24",
-                                         "28", "32", "40", "48", "56", "64"};
+std::vector<std::string> problem_size = {
+    "1",  "2",  "3",  "4",  "5",  "6",  "7",  "8",  "10", "12",
+    "14", "16", "20", "24", "28", "32", "40", "48", "56", "64"};
 
 NVBENCH_BENCH(bench_sgmv)
     .set_name("sgmv_shrink_NxN")
