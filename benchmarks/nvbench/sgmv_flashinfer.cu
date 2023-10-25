@@ -26,12 +26,14 @@ void sgmv_cpu_reference(T *y, T *x, T **w, int *s, int num_problems, int d_in, i
 }
 
 template <typename T>
-std::vector<T> transpose(const std::vector<T> &x, uint32_t M, uint32_t N) {
+std::vector<T> transpose(const std::vector<T> &x, uint32_t num_layers, uint32_t M, uint32_t N) {
   std::vector<T> y(x.size());
-  assert(x.size() == M * N);
-  for (uint32_t i = 0; i < M; i++) {
-    for (uint32_t j = 0; j < N; j++) {
-      y[j * M + i] = x[i * N + j];
+  assert(x.size() == num_layers * M * N);
+  for (uint32_t l = 0; l < num_layers; l++) {
+    for (uint32_t i = 0; i < M; i++) {
+      for (uint32_t j = 0; j < N; j++) {
+        y[l * M * N + j * M + i] = x[l * M * N + i * N + j];
+      }
     }
   }
   return std::move(y);
@@ -50,7 +52,7 @@ void bench_sgmv(nvbench::state &state) {
   int d_in = state.get_int64("d_in");
   int d_out = state.get_int64("d_out");
   int num_loras = 100;
-  int num_layers = 1;
+  int num_layers = 3;
   std::mt19937 gen(0xabcdabcd987);
   std::normal_distribution<float> dis;
 
@@ -96,7 +98,7 @@ void bench_sgmv(nvbench::state &state) {
   thrust::device_vector<half> x_d(x.begin(), x.end());
   std::vector<thrust::device_vector<half>> w_all_d;
   for (size_t i = 0; i < num_loras; i++) {
-    std::vector<half> w_all_i_trans = std::move(transpose(w_all[i], d_in, d_out));
+    std::vector<half> w_all_i_trans = std::move(transpose(w_all[i], num_layers, d_in, d_out));
     w_all_d.emplace_back(w_all_i_trans.begin(), w_all_i_trans.end());
   }
   thrust::device_vector<int32_t> s_d(s.begin(), s.end());
@@ -112,13 +114,16 @@ void bench_sgmv(nvbench::state &state) {
   }
   thrust::device_vector<half *> w_d(w_gpu_ptr.begin(), w_gpu_ptr.end());
 
-  uint32_t num_warps = d_out / 16;
+  constexpr uint32_t num_warps = 4;
   dim3 nblks(num_problems);
   dim3 nthrs(32, num_warps);
   constexpr uint32_t num_stages = 2;
   constexpr uint32_t num_k_frags_per_stage = 8;
-  uint32_t smem = num_stages * 2 * sizeof(half) * num_warps * 16 * (16 * num_k_frags_per_stage);
+  const uint32_t num_blocks_n = d_out / 16;
+  uint32_t smem =
+      num_stages * sizeof(half) * num_k_frags_per_stage * 16 * 16 * (num_warps + num_blocks_n);
   cudaStream_t stream = nullptr;
+  auto kernel = flashinfer::sgmv::sgmv_shrink<half, int, num_warps, 4096, 16>;
 
   for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
     // call cpu_reference function
@@ -129,9 +134,15 @@ void bench_sgmv(nvbench::state &state) {
     // call sgmv function
     thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
 
-    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16><<<nblks, nthrs, smem, stream>>>(
+    kernel<<<nblks, nthrs, smem, stream>>>(
         thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems);
+        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems,
+        layer_idx);
+    cudaError_t status = cudaGetLastError();
+    if (status != cudaSuccess) {
+      state.skip("sgmv_shrink kernel failed");
+      return;
+    }
 
     // copy thrust device_vector y_d to std vector y_h
     thrust::host_vector<half> y_h = y_d;
@@ -155,9 +166,10 @@ void bench_sgmv(nvbench::state &state) {
   thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch &) {
     int layer_idx = 0;
-    flashinfer::sgmv::sgmv_shrink<half, int, 4096, 16><<<nblks, nthrs, smem, stream>>>(
+    kernel<<<nblks, nthrs, smem, stream>>>(
         thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems);
+        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems,
+        layer_idx);
   });
 }
 
