@@ -128,19 +128,26 @@ void bench_sgmv(nvbench::state& state) {
   uint32_t smem =
       num_stages * sizeof(half) * num_k_frags_per_stage * 16 * 16 * (num_warps + num_blocks_n);
   cudaStream_t stream = nullptr;
-  auto kernel = flashinfer::sgmv::sgmv_shrink<half, int, num_warps, D_OUT>;
+  auto cooperative_kernel = flashinfer::sgmv::sgmv_shrink<true, half, int, num_warps, D_OUT>;
+  auto kernel = flashinfer::sgmv::sgmv_shrink<false, half, int, num_warps, D_OUT>;
 
   uint32_t dev_id = 0;
   int num_blocks_per_sm = 0;
   int num_sm = 0;
+  bool use_cooperative = true;
   cudaDeviceGetAttribute(&num_sm, cudaDevAttrMultiProcessorCount, dev_id);
-  cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel, num_warps * 32, smem);
+  cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, cooperative_kernel,
+                                                num_warps * 32, smem);
 
   const uint32_t max_grid_size = num_sm * num_blocks_per_sm;
-  const uint32_t max_num_chunks = max_grid_size / num_problems;
-  const uint32_t chunk_size =
-      std::max(256U, pad_to_multiple_of_16((d_in + max_num_chunks - 1) / max_num_chunks));
-  const uint32_t num_chunks = (d_in + chunk_size - 1) / chunk_size;
+
+  uint32_t chunk_size = 256;
+  uint32_t num_chunks = (d_in + chunk_size - 1) / chunk_size;
+  if (num_chunks * num_problems > max_grid_size) {
+    use_cooperative = false;
+    chunk_size = d_in;
+    num_chunks = 1;
+  }
 
   dim3 nblks(num_chunks, num_problems);
 
@@ -163,8 +170,13 @@ void bench_sgmv(nvbench::state& state) {
                     (void*)&s_ptr, (void*)&tmp_ptr,   (void*)&num_problems,
                     (void*)&d_in,  (void*)&layer_idx, (void*)&chunk_size};
 
-    cudaError_t status =
-        cudaLaunchCooperativeKernel((void*)kernel, nblks, nthrs, args, smem, stream);
+    cudaError_t status = cudaSuccess;
+    if (use_cooperative) {
+      status =
+          cudaLaunchCooperativeKernel((void*)cooperative_kernel, nblks, nthrs, args, smem, stream);
+    } else {
+      status = cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem, stream);
+    }
     if (status != cudaSuccess) {
       state.skip("sgmv_shrink kernel failed");
       return;
@@ -200,8 +212,13 @@ void bench_sgmv(nvbench::state& state) {
     void* args[] = {(void*)&y_ptr, (void*)&x_ptr,     (void*)&w_ptr,
                     (void*)&s_ptr, (void*)&tmp_ptr,   (void*)&num_problems,
                     (void*)&d_in,  (void*)&layer_idx, (void*)&chunk_size};
-    cudaError_t status =
-        cudaLaunchCooperativeKernel((void*)kernel, nblks, nthrs, args, smem, stream);
+    cudaError_t status = cudaSuccess;
+    if (use_cooperative) {
+      status =
+          cudaLaunchCooperativeKernel((void*)cooperative_kernel, nblks, nthrs, args, smem, stream);
+    } else {
+      status = cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem, stream);
+    }
     if (status != cudaSuccess) {
       state.skip("sgmv_shrink kernel failed");
       return;

@@ -9,7 +9,7 @@ namespace flashinfer {
 
 namespace sgmv {
 
-template <typename T, typename IdType, uint32_t num_warps, uint32_t d_out>
+template <bool cooperative, typename T, typename IdType, uint32_t num_warps, uint32_t d_out>
 __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t num_problems,
                             uint32_t d_in, uint32_t layer_idx, uint32_t chunk_size) {
   auto block = cooperative_groups::this_thread_block();
@@ -229,17 +229,17 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
     cp_async::wait_group<0>();
     block.sync();
 
+    if constexpr (cooperative) {
 #pragma unroll
-    for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
-      vec_t<float, 8>::memcpy(
-          tmp + (fn * grid.size() + (problem_id * num_chunks + bx) * block.num_threads() +
-                 block.thread_rank()) *
-                    8,
-          y_frag[fn]);
-    }
-    grid.sync();
+      for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
+        vec_t<float, 8>::memcpy(
+            tmp + (fn * grid.size() + (problem_id * num_chunks + bx) * block.num_threads() +
+                   block.thread_rank()) *
+                      8,
+            y_frag[fn]);
+      }
+      grid.sync();
 
-    if (bx == 0) {
 #pragma unroll
       for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
 #pragma unroll
@@ -258,7 +258,9 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
           }
         }
       }
+    }
 
+    if (bx == 0) {
       // store y_frag
       y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 4, 0);
 #pragma unroll
