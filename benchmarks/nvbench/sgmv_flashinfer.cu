@@ -46,6 +46,10 @@ bool isclose(T a, T b, float rtol = 1e-5, float atol = 1e-8) {
   return fabs(a_f32 - b_f32) <= (atol + rtol * fabs(b_f32));
 }
 
+uint32_t pad_to_multiple_of_16(uint32_t x) {
+  return (x + 15) & ~15;
+}
+
 void bench_sgmv(nvbench::state &state) {
   auto problem_size_s = state.get_string("problem_size");
   int num_problems = state.get_int64("num_problems");
@@ -114,8 +118,10 @@ void bench_sgmv(nvbench::state &state) {
   }
   thrust::device_vector<half *> w_d(w_gpu_ptr.begin(), w_gpu_ptr.end());
 
+  // tmp_ptr
+  thrust::device_vector<float> tmp_d(2 * 1024 * 1024);
+
   constexpr uint32_t num_warps = 4;
-  dim3 nblks(num_problems);
   dim3 nthrs(32, num_warps);
   constexpr uint32_t num_stages = 2;
   constexpr uint32_t num_k_frags_per_stage = 8;
@@ -124,6 +130,19 @@ void bench_sgmv(nvbench::state &state) {
       num_stages * sizeof(half) * num_k_frags_per_stage * 16 * 16 * (num_warps + num_blocks_n);
   cudaStream_t stream = nullptr;
   auto kernel = flashinfer::sgmv::sgmv_shrink<half, int, num_warps, 4096, 16>;
+
+  uint32_t dev_id = 0;
+  int num_blocks_per_sm = 0;
+  int num_sm = 0;
+  cudaDeviceGetAttribute(&num_sm, cudaDevAttrMultiProcessorCount, dev_id);
+  cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel, num_warps * 32, smem);
+
+  const uint32_t max_grid_size = num_sm * num_blocks_per_sm;
+  const uint32_t max_num_chunks = max_grid_size / num_problems;
+  const uint32_t chunk_size = std::max(256U, pad_to_multiple_of_16((d_in + max_num_chunks - 1) / max_num_chunks));
+  const uint32_t num_chunks = (d_in + chunk_size - 1) / chunk_size;
+
+  dim3 nblks(num_chunks, num_problems);
 
   for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
     // call cpu_reference function
@@ -134,11 +153,26 @@ void bench_sgmv(nvbench::state &state) {
     // call sgmv function
     thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
 
-    kernel<<<nblks, nthrs, smem, stream>>>(
-        thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems,
-        layer_idx);
-    cudaError_t status = cudaGetLastError();
+    half* y_ptr = thrust::raw_pointer_cast(y_d.data());
+    half* x_ptr = thrust::raw_pointer_cast(x_d.data());
+    half** w_ptr = thrust::raw_pointer_cast(w_d.data());
+    int* s_ptr = thrust::raw_pointer_cast(s_d.data());
+    float* tmp_ptr = thrust::raw_pointer_cast(tmp_d.data());
+
+    void* args[] = {
+      (void*)&y_ptr,
+      (void*)&x_ptr,
+      (void*)&w_ptr,
+      (void*)&s_ptr,
+      (void*)&tmp_ptr,
+      (void*)&num_problems,
+      (void*)&layer_idx,
+      (void*)&chunk_size
+    };
+
+    cudaError_t status = cudaLaunchCooperativeKernel(
+      (void*)kernel, nblks, nthrs, args, smem, stream
+    );
     if (status != cudaSuccess) {
       state.skip("sgmv_shrink kernel failed");
       return;
@@ -165,11 +199,29 @@ void bench_sgmv(nvbench::state &state) {
 
   thrust::device_vector<half> y_d(y_init.begin(), y_init.end());
   state.exec(nvbench::exec_tag::sync, [&](nvbench::launch &) {
+    half* y_ptr = thrust::raw_pointer_cast(y_d.data());
+    half* x_ptr = thrust::raw_pointer_cast(x_d.data());
+    half** w_ptr = thrust::raw_pointer_cast(w_d.data());
+    int* s_ptr = thrust::raw_pointer_cast(s_d.data());
+    float* tmp_ptr = thrust::raw_pointer_cast(tmp_d.data());
     int layer_idx = 0;
-    kernel<<<nblks, nthrs, smem, stream>>>(
-        thrust::raw_pointer_cast(y_d.data()), thrust::raw_pointer_cast(x_d.data()),
-        thrust::raw_pointer_cast(w_d.data()), thrust::raw_pointer_cast(s_d.data()), num_problems,
-        layer_idx);
+    void* args[] = {
+      (void*)&y_ptr,
+      (void*)&x_ptr,
+      (void*)&w_ptr,
+      (void*)&s_ptr,
+      (void*)&tmp_ptr,
+      (void*)&num_problems,
+      (void*)&layer_idx,
+      (void*)&chunk_size
+    };
+    cudaError_t status = cudaLaunchCooperativeKernel(
+      (void*)kernel, nblks, nthrs, args, smem, stream
+    );
+    if (status != cudaSuccess) {
+      state.skip("sgmv_shrink kernel failed");
+      return;
+    }
   });
 }
 
