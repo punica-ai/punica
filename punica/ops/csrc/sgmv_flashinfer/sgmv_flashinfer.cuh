@@ -9,9 +9,9 @@ namespace flashinfer {
 
 namespace sgmv {
 
-template <typename T, typename IdType, uint32_t num_warps, uint32_t d_in, uint32_t d_out>
+template <typename T, typename IdType, uint32_t num_warps, uint32_t d_out>
 __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t num_problems,
-                            uint32_t layer_idx, uint32_t chunk_size) {
+                            uint32_t d_in, uint32_t layer_idx, uint32_t chunk_size) {
   auto block = cooperative_groups::this_thread_block();
   auto grid = cooperative_groups::this_grid();
   const uint32_t problem_id = blockIdx.y;
@@ -65,7 +65,7 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
       }
       cp_async::commit_group();
       cp_async::wait_group<0>();
-      __syncthreads();
+      block.sync();
 
       y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx % 16, tx / 16);
 #pragma unroll
@@ -142,7 +142,7 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
     for (uint32_t iter = 0; iter < num_iterations; ++iter) {
       const uint32_t stage_idx = iter % 2;
       cp_async::wait_group<1>();
-      __syncthreads();
+      block.sync();
 
       x_smem[stage_idx].offset =
           smem_t::get_permuted_offset<num_cells_k>(ty * 16 + tx % 16, tx / 16);
@@ -163,6 +163,16 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
         }
         w_smem[stage_idx].offset += 16 * num_cells_k - 4 * num_k_frags;
       }
+
+      // compute y_frag
+#pragma unroll
+      for (uint32_t fk = 0; fk < num_k_frags; ++fk) {
+#pragma unroll
+        for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
+          mma::mma_sync_m16n16k16_row_col_f16f16f32<T>(y_frag[fn], x_frag[fk], w_frag[fk][fn]);
+        }
+      }
+      block.sync();
 
       // load next stage
       if (iter + num_stages < num_iterations) {
@@ -215,84 +225,81 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp, uint32_t n
         }
       }
       cp_async::commit_group();
-
-      // compute y_frag
-#pragma unroll
-      for (uint32_t fk = 0; fk < num_k_frags; ++fk) {
-#pragma unroll
-        for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
-          mma::mma_sync_m16n16k16_row_col_f16f16f32<T>(y_frag[fn], x_frag[fk], w_frag[fk][fn]);
-        }
-      }
     }
     cp_async::wait_group<0>();
-    __syncthreads();
+    block.sync();
 
 #pragma unroll
     for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
-      vec_t<float, 8>::memcpy(tmp + (fn * grid.size() + grid.thread_rank()) * 8, y_frag[fn]);
-#pragma unroll
-      for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
-        y_frag[fn][reg_id] = 0.f;
-      }
+      vec_t<float, 8>::memcpy(
+          tmp + (fn * grid.size() + (problem_id * num_chunks + bx) * block.num_threads() +
+                 block.thread_rank()) *
+                    8,
+          y_frag[fn]);
     }
     grid.sync();
 
+    if (bx == 0) {
 #pragma unroll
-    for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
-      for (uint32_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-        vec_t<float, 8> y_other;
-        y_other.load(tmp + (fn * grid.size() +
-                            (problem_id * num_chunks + chunk_idx) * block.num_threads() +
-                            block.thread_rank()) *
-                               8);
+      for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
 #pragma unroll
         for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
-          y_frag[fn][reg_id] += y_other[reg_id];
+          y_frag[fn][reg_id] = 0.f;
         }
-      }
-    }
-
-    // store y_frag
-    y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 4, 0);
+        for (uint32_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+          vec_t<float, 8> y_other;
+          y_other.load(tmp + (fn * grid.size() +
+                              (problem_id * num_chunks + chunk_idx) * block.num_threads() +
+                              block.thread_rank()) *
+                                 8);
 #pragma unroll
-    for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
-      vec_cast<T, float, 2>((T*)(y_smem.base + y_smem.offset) + (tx % 4) * 2, &y_frag[fn][0]);
-      vec_cast<T, float, 2>((T*)(y_smem.base + y_smem.offset + 8 * num_cells_n) + (tx % 4) * 2,
-                            &y_frag[fn][2]);
-      vec_cast<T, float, 2>((T*)(y_smem.base + (y_smem.offset ^ 0x1)) + (tx % 4) * 2,
-                            &y_frag[fn][4]);
-      vec_cast<T, float, 2>(
-          (T*)(y_smem.base + (y_smem.offset ^ 0x1) + 8 * num_cells_n) + (tx % 4) * 2,
-          &y_frag[fn][6]);
-      y_smem.offset = (y_smem.offset ^ 0x2) + (fn & 0x1) * 8;
-    }
-
-    // store y
-    if constexpr (num_blocks_n == 1) {
-      uint32_t row_idx = s_start + (i * num_warps + ty) * 16 + tx / 2;
-      T* y_ptr = y + row_idx * d_out + (tx % 2) * cell_capacity<T>();
-      y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 2, tx % 2);
-      if (row_idx < s_end) {
-        y_smem.store_128b(y_ptr);
-      }
-    } else {
-      uint32_t row_idx = s_start + (i * num_warps + ty) * 16 + tx / 4;
-      T* y_ptr = y + row_idx * d_out + (tx % 4) * cell_capacity<T>();
-      y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 4, tx % 4);
-#pragma unroll
-      for (uint32_t j = 0; j < 2; ++j) {
-#pragma unroll
-        for (uint32_t fno = 0; fno < num_blocks_n / 2; ++fno) {
-          if (row_idx < s_end) {
-            y_smem.store_128b(y_ptr);
+          for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
+            y_frag[fn][reg_id] += y_other[reg_id];
           }
-          y_ptr += 4 * cell_capacity<T>();
-          y_smem.offset += 8;
         }
-        row_idx += 8;
-        y_ptr += 8 * d_out;
-        y_smem.offset += 8 * num_cells_n - 4 * num_blocks_n;
+      }
+
+      // store y_frag
+      y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 4, 0);
+#pragma unroll
+      for (uint32_t fn = 0; fn < num_blocks_n; ++fn) {
+        vec_cast<T, float, 2>((T*)(y_smem.base + y_smem.offset) + (tx % 4) * 2, &y_frag[fn][0]);
+        vec_cast<T, float, 2>((T*)(y_smem.base + y_smem.offset + 8 * num_cells_n) + (tx % 4) * 2,
+                              &y_frag[fn][2]);
+        vec_cast<T, float, 2>((T*)(y_smem.base + (y_smem.offset ^ 0x1)) + (tx % 4) * 2,
+                              &y_frag[fn][4]);
+        vec_cast<T, float, 2>(
+            (T*)(y_smem.base + (y_smem.offset ^ 0x1) + 8 * num_cells_n) + (tx % 4) * 2,
+            &y_frag[fn][6]);
+        y_smem.offset = (y_smem.offset ^ 0x2) + (fn & 0x1) * 8;
+      }
+
+      // store y
+      if constexpr (num_blocks_n == 1) {
+        uint32_t row_idx = s_start + (i * num_warps + ty) * 16 + tx / 2;
+        T* y_ptr = y + row_idx * d_out + (tx % 2) * cell_capacity<T>();
+        y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 2, tx % 2);
+        if (row_idx < s_end) {
+          y_smem.store_128b(y_ptr);
+        }
+      } else {
+        uint32_t row_idx = s_start + (i * num_warps + ty) * 16 + tx / 4;
+        T* y_ptr = y + row_idx * d_out + (tx % 4) * cell_capacity<T>();
+        y_smem.offset = smem_t::get_permuted_offset<num_cells_n>(ty * 16 + tx / 4, tx % 4);
+#pragma unroll
+        for (uint32_t j = 0; j < 2; ++j) {
+#pragma unroll
+          for (uint32_t fno = 0; fno < num_blocks_n / 2; ++fno) {
+            if (row_idx < s_end) {
+              y_smem.store_128b(y_ptr);
+            }
+            y_ptr += 4 * cell_capacity<T>();
+            y_smem.offset += 8;
+          }
+          row_idx += 8;
+          y_ptr += 8 * d_out;
+          y_smem.offset += 8 * num_cells_n - 4 * num_blocks_n;
+        }
       }
     }
   }
