@@ -178,8 +178,8 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, uint32_t num_problems)
           w_ptr += 8 * d_in - 2 * cell_capacity<T>() * num_k_frags;
           w_smem[stage_idx].offset += 8 * num_cells_per_block_k - 4 * num_k_frags;
         }
-        cp_async::commit_group();
       }
+      cp_async::commit_group();
 
       // compute y_frag
 #pragma unroll
