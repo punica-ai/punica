@@ -44,7 +44,7 @@ def lora_ref_impl(
 
 
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
-@pytest.mark.parametrize("h1,h2", [(11008, 16), (16, 11008)])
+@pytest.mark.parametrize("h1,h2", [(11008, 16), (16, 11008), (1024, 16), (16, 1024)])
 @pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3"])
 @torch.inference_mode()
 def test_sgmv_correctness(dtype_str, h1, h2, batch_setup):

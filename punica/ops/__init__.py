@@ -16,6 +16,8 @@ __all__ = [
     "rms_norm",
 ]
 
+hack_batch_decode_tmp = {}
+
 
 def mha_rope_decode(
     q: torch.Tensor,
@@ -41,9 +43,14 @@ def mha_rope_decode(
     Shape: `[batch_size, num_heads, head_dim]`. \
     Output of the multi-head attention.
   """
+  if q.device not in hack_batch_decode_tmp:
+    tmp1 = torch.empty((32*1024*1024,), dtype=torch.float32, device=q.device)
+    tmp2 = torch.empty((32*1024*1024,), dtype=torch.float32, device=q.device)
+    hack_batch_decode_tmp[q.device] = (tmp1, tmp2)
+  (tmp1, tmp2) = hack_batch_decode_tmp[q.device]
   o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
   _kernels.batch_decode(o, q, kv.data, kv.indptr, kv.indicies,
-                        kv.last_page_offset, layer_idx)
+                        kv.last_page_offset, tmp1, tmp2, layer_idx)
   return o
 
 
@@ -185,7 +192,7 @@ def add_lora_sgmv_cutlass(
   tmp_size = _kernels.sgmv_cutlass_tmp_size(wa_ptr.size(0))
   tmp = torch.empty((tmp_size,), dtype=torch.uint8, device=x.device)
   v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
-  _kernels.sgmv_cutlass(v, x, wa_ptr, s, tmp, layer_idx)
+  _kernels.sgmv_cutlass(y, v, wb_ptr, s, tmp, layer_idx)
   _kernels.sgmv_cutlass(y, v, wb_ptr, s, tmp, layer_idx)
 
 

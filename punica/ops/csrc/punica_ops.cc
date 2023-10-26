@@ -4,11 +4,11 @@
 
 #include <cstdint>
 
-#include "bgmv/bgmv_config.h"
+// #include "bgmv/bgmv_config.h"
 #include "flashinfer_adapter/flashinfer_config.h"
 #include "rms_norm/rms_norm.h"
 #include "sgmv/sgmv.h"
-#include "sgmv_flashinfer/sgmv_config.h"
+// #include "sgmv_flashinfer/sgmv_config.h"
 
 namespace {
 
@@ -63,8 +63,7 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
   }
 
 #define _DISPATCH_CASES(...)                                 \
-  _DISPATCH_CASE(at::ScalarType::Half, nv_half, __VA_ARGS__) \
-  _DISPATCH_CASE(at::ScalarType::BFloat16, nv_bfloat16, __VA_ARGS__)
+  _DISPATCH_CASE(at::ScalarType::Half, nv_half, __VA_ARGS__)
 
 #define DISPATCH_TORCH_DTYPE(scalar_type, ...) \
   _DISPATCH_SWITCH(scalar_type, _DISPATCH_CASES(__VA_ARGS__))
@@ -73,7 +72,7 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 
 void batch_decode(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
                   torch::Tensor kv_indptr, torch::Tensor kv_indicies,
-                  torch::Tensor last_page_offset, int layer_idx) {
+                  torch::Tensor last_page_offset, torch::Tensor tmp1, torch::Tensor tmp2, int layer_idx) {
   CHECK_INPUT(o);
   CHECK_INPUT(q);
   CHECK_INPUT(kv_data);
@@ -103,6 +102,7 @@ void batch_decode(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
         static_cast<c_type*>(o.data_ptr()), static_cast<c_type*>(q.data_ptr()),
         static_cast<c_type*>(kv_data.data_ptr()), kv_indptr.data_ptr<int32_t>(),
         kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        tmp1.data_ptr(), tmp2.data_ptr(),
         head_dim, num_layers, layer_idx, num_qo_heads, num_kv_heads, page_size,
         batch_size);
     return true;
@@ -214,7 +214,7 @@ void append_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
 }
 
 //====== bgmv ======
-
+/*
 template <typename T>
 inline bool launch_bgmv_kernel(T* Y, const T* X, const T* W,
                                const int64_t* lora_indices,
@@ -285,7 +285,7 @@ void dispatch_bgmv(torch::Tensor y, torch::Tensor x, torch::Tensor w,
   TORCH_CHECK(ok, "No suitable kernel.", " h_in=", h_in, " h_out=", h_out,
               " dtype=", x.scalar_type());
 }
-
+*/
 //====== sgmv ======
 
 void dispatch_sgmv_cutlass(torch::Tensor y, torch::Tensor x,
@@ -316,6 +316,7 @@ void dispatch_sgmv_cutlass(torch::Tensor y, torch::Tensor x,
   TORCH_CHECK(ok, "No suitable kernel.", " dtype=", x.scalar_type());
 }
 
+/*
 void dispatch_sgmv_shrink(torch::Tensor y, torch::Tensor x, torch::Tensor w_ptr,
                           torch::Tensor s, torch::Tensor tmp, int layer_idx) {
   CHECK_INPUT(y);
@@ -355,6 +356,7 @@ void dispatch_sgmv_shrink(torch::Tensor y, torch::Tensor x, torch::Tensor w_ptr,
   TORCH_CHECK(ok, "No suitable kernel.", " dtype=", x.scalar_type(),
               " d_out=", d_out);
 }
+*/
 
 //====== rms_norm ======
 
@@ -394,10 +396,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("init_kv", &init_kv, "");
   m.def("append_kv", &append_kv, "");
 
-  m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
+  // m.def("dispatch_bgmv", &dispatch_bgmv, "dispatch_bgmv");
 
   m.def("sgmv_cutlass", &dispatch_sgmv_cutlass, "");
   m.def("sgmv_cutlass_tmp_size", &sgmv_tmp_size, "");
-  m.def("sgmv_shrink", &dispatch_sgmv_shrink, "");
+  // m.def("sgmv_shrink", &dispatch_sgmv_shrink, "");
   m.def("rms_norm", &dispatch_rms_norm, "");
 }

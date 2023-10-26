@@ -98,8 +98,6 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       mp_size = len(dist.get_process_group_ranks(mp_group))
       auto_tp = AutoTP(mp_group, mp_size)
       model = auto_tp.replace_module(model)
-      llama_config.num_attention_heads //= mp_size
-      llama_config.num_key_value_heads //= mp_size
     else:
       mp_size = 1
   model = model.to_empty(device=device)
@@ -114,7 +112,7 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       dtype=dtype,
       device=device)
   lora_models = [
-      LlamaLoraWeight(llama_config, lora_cfg.rank, dtype, device)
+      LlamaLoraWeight(llama_config, lora_cfg.rank, dtype, device, mp_size)
       for _ in range(min(rs.num_lora_models, textgen_cfg.batch_size))
   ]
   while len(lora_models) < rs.num_lora_models:
@@ -187,6 +185,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                                   lora_lens)
     logits, _ = model(input_ids, blen, prefill_kv, decode_kv, lora)
     t2 = time.perf_counter()
+
+    pbar.set_postfix({"bs": len(newreqs)+len(workset)})
 
     # Post-process prefill
     new_workset: list[RequestContext] = []
@@ -485,6 +485,7 @@ def lora_vllm_backbone(model_cfg: ModelConfig, lora_cfg: LoraConfig,
           tokenizer="hf-internal-testing/llama-tokenizer",
           dtype="float16",
           load_format="dummy",
+          tensor_parallel_size=8,
       ))
 
   @dataclasses.dataclass
@@ -543,6 +544,7 @@ def lora_vllm_backbone(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 
     # Run vLLM
     step_outputs = llm_engine.step()
+    pbar.set_postfix({"bs": len(step_outputs)})
 
     # Post processing
     t1 = time.perf_counter()

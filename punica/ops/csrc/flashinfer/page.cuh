@@ -254,7 +254,6 @@ cudaError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv,
                                      DType* key, DType* value,
                                      cudaStream_t stream = nullptr,
                                      uint32_t dev_id = 0) {
-  FLASHINFER_CUDA_CALL(cudaSetDevice(dev_id));
   uint32_t head_dim = paged_kv.head_dim;
   uint32_t batch_size = paged_kv.batch_size;
   uint32_t num_heads = paged_kv.num_heads;
@@ -280,7 +279,6 @@ cudaError_t AppendPagedKVCachePrefill(paged_kv_t<DType, IdType> paged_kv,
                                       IdType* append_indptr,
                                       cudaStream_t stream = nullptr,
                                       uint32_t dev_id = 0) {
-  FLASHINFER_CUDA_CALL(cudaSetDevice(dev_id));
   uint32_t head_dim = paged_kv.head_dim;
   uint32_t batch_size = paged_kv.batch_size;
   uint32_t num_heads = paged_kv.num_heads;

@@ -1053,8 +1053,6 @@ cudaError_t BatchDecodeWithPagedKVCache(
   const uint32_t batch_size = paged_kv.batch_size;
   assert(num_qo_heads % num_kv_heads == 0);
 
-  FLASHINFER_CUDA_CALL(cudaSetDevice(dev_id));
-
   SWITCH_GQA_GROUP_SIZE(
       num_qo_heads / num_kv_heads, GROUP_SIZE,
       {SWITCH_HEAD_DIM(
@@ -1083,8 +1081,8 @@ cudaError_t BatchDecodeWithPagedKVCache(
                 &num_blocks_per_sm, cooperative_kernel, num_threads,
                 smem_size));
             uint32_t max_grid_size = num_blocks_per_sm * num_sm;
-
-            if (batch_size * num_kv_heads >= max_grid_size || tmp == nullptr) {
+            (void) max_grid_size;
+            if (tmp == nullptr) {
               // do not use cooperative kernel
               dim3 nblks(batch_size, num_kv_heads);
               dim3 nthrs(bdx, bdy, bdz);

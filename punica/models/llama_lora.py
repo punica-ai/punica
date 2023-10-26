@@ -8,7 +8,6 @@ from torch import nn
 from transformers.models.llama.modeling_llama import (
     ACT2FN,
     LlamaConfig,
-    LlamaRMSNorm,
     PreTrainedModel,
     rotate_half,
 )
@@ -24,7 +23,8 @@ def rotary_pos_emb(q, k, beg):
   end = beg + seqlen
 
   base = 10000
-  inv_freq = 1.0 / (base**(torch.arange(0, dim, 2).float().to(device) / dim))
+  arange = torch.arange(0, dim, 2, dtype=torch.float32, device=device)
+  inv_freq = 1.0 / (base**(arange / dim))
   t = torch.arange(beg, end, device=device, dtype=dtype)
   freqs = torch.einsum("i,j->ij", t, inv_freq)
   emb = torch.cat((freqs, freqs), dim=-1).unsqueeze(0).unsqueeze(0)
@@ -43,20 +43,24 @@ class LlamaLoraWeight:
       lora_rank: int,
       dtype: torch.dtype,
       device: torch.device,
+      mp_size: int = 1,
   ):
     self.q = LoraWeight(config.num_hidden_layers, config.hidden_size,
-                        config.hidden_size, lora_rank, dtype, device)
+                        config.hidden_size // mp_size, lora_rank, dtype, device)
     self.k = LoraWeight(config.num_hidden_layers, config.hidden_size,
-                        config.hidden_size, lora_rank, dtype, device)
+                        config.hidden_size // mp_size, lora_rank, dtype, device)
     self.v = LoraWeight(config.num_hidden_layers, config.hidden_size,
-                        config.hidden_size, lora_rank, dtype, device)
-    self.o = LoraWeight(config.num_hidden_layers, config.hidden_size,
+                        config.hidden_size // mp_size, lora_rank, dtype, device)
+    self.o = LoraWeight(config.num_hidden_layers, config.hidden_size // mp_size,
                         config.hidden_size, lora_rank, dtype, device)
     self.gate = LoraWeight(config.num_hidden_layers, config.hidden_size,
-                           config.intermediate_size, lora_rank, dtype, device)
+                           config.intermediate_size // mp_size, lora_rank,
+                           dtype, device)
     self.up = LoraWeight(config.num_hidden_layers, config.hidden_size,
-                         config.intermediate_size, lora_rank, dtype, device)
-    self.down = LoraWeight(config.num_hidden_layers, config.intermediate_size,
+                         config.intermediate_size // mp_size, lora_rank, dtype,
+                         device)
+    self.down = LoraWeight(config.num_hidden_layers,
+                           config.intermediate_size // mp_size,
                            config.hidden_size, lora_rank, dtype, device)
 
 
@@ -229,9 +233,12 @@ class LlamaMlpWithLora(nn.Module):
     self.layer_idx = layer_idx
     self.hidden_size = config.hidden_size
     self.intermediate_size = config.intermediate_size
-    self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-    self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-    self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+    self.gate_proj = nn.Linear(
+        self.hidden_size, self.intermediate_size, bias=False)
+    self.down_proj = nn.Linear(
+        self.intermediate_size, self.hidden_size, bias=False)
+    self.up_proj = nn.Linear(
+        self.hidden_size, self.intermediate_size, bias=False)
     self.act_fn = ACT2FN[config.hidden_act]
 
   def forward(

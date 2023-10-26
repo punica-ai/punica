@@ -16,10 +16,10 @@ class KvPool:
       device: torch.device,
   ):
     self._buf = torch.empty(
-        (capacity, num_layers, 2, num_heads, block_len, head_dim),
+        (1, num_layers, 2, num_heads, block_len, head_dim),
         dtype=dtype,
         device=device)
-    self._free = set(range(capacity))
+    self._free_blocks = capacity
 
   @property
   def buf(self):
@@ -37,16 +37,15 @@ class KvPool:
 
   @property
   def num_free_blocks(self):
-    return len(self._free)
+    return self._free_blocks
 
   def alloc_block(self) -> int:
-    idx = self._free.pop()
-    return idx
+    assert self._free_blocks > 0
+    self._free_blocks -= 1
+    return 0
 
   def free_block(self, idx: int):
-    assert 0 <= idx < self._buf.size(0)
-    assert idx not in self._free
-    self._free.add(idx)
+    self._free_blocks += 1
 
 
 class KvCache:
