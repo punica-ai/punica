@@ -132,7 +132,7 @@ class LinearLayer(nn.Module):
         if self.bias is not None:
             output += self.bias
         return output
-    
+
 
 class AutoTP:
     def __init__(self, mp_group, mp_size):
@@ -147,7 +147,7 @@ class AutoTP:
         elif isinstance(child, LlamaAttentionHF):
             params_list = ["hidden_size", "num_heads", "num_key_value_heads"]
         elif isinstance(child, LlamaAttentionPunica) or isinstance(child, LlamaAttentionPunicaLora):
-            params_list = ["hidden_size", "num_heads"]
+            params_list = ["hidden_size", "num_qo_heads", "num_kv_heads"]
         for param in params_list:
             if hasattr(child, param):
                 param_val = getattr(child, param)
@@ -163,8 +163,8 @@ class AutoTP:
         data = child.weight.data.split(weight_shape[1] // self.mp_size, dim=1)
         data = data[mp_replace.gpu_index]
         setattr(child, "replaced", True)
-        return LinearAllReduce(nn.Parameter(data, requires_grad=False), 
-                               bias=None if child.bias is None else nn.Parameter(child.bias), 
+        return LinearAllReduce(nn.Parameter(data, requires_grad=False),
+                               bias=None if child.bias is None else nn.Parameter(child.bias),
                                mp_group=self.mp_group)
 
     def replace_linear(self, child):

@@ -89,19 +89,20 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
       intermediate_size=model_cfg.intermediate_size,
       num_hidden_layers=model_cfg.num_layers,
   )
-  model = LlamaForCausalLMWithLora(llama_config)
-  #model = LlamaForCausalLMWithLora.from_pretrained("meta-llama/Llama-2-7b-chat-hf", low_cpu_mem_usage=True, torch_dtype=dtype)
+  with torch.device("meta"):
+    model = LlamaForCausalLMWithLora(llama_config)
 
-  if is_distributed():
-    init_distributed()
-    mp_group = create_tensor_parallel_group()
-    mp_size = len(dist.get_process_group_ranks(mp_group))
-    auto_tp = AutoTP(mp_group, mp_size)
-    model = auto_tp.replace_module(model)
-    llama_config.num_attention_heads //= mp_size
-  else:
-    mp_size = 1
-  model = model.to(device)
+    if is_distributed():
+      init_distributed()
+      mp_group = create_tensor_parallel_group()
+      mp_size = len(dist.get_process_group_ranks(mp_group))
+      auto_tp = AutoTP(mp_group, mp_size)
+      model = auto_tp.replace_module(model)
+      llama_config.num_attention_heads //= mp_size
+      llama_config.num_key_value_heads //= mp_size
+    else:
+      mp_size = 1
+  model = model.to_empty(device=device)
 
   torch.set_default_dtype(default_dtype)
   kvpool = KvPool(
