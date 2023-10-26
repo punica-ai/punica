@@ -23,6 +23,7 @@ from benchmarks.bench_textgen import (
     TextGenBenchResult,
     TextGenConfig,
     generate_request_set,
+    MODEL_CFGS,
 )
 from benchmarks.benchmark_utils import gc_torch, get_lora_lens
 
@@ -83,13 +84,14 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   torch.set_default_dtype(dtype)
   llama_config = LlamaConfig(
       hidden_size=model_cfg.hidden_size,
-      num_attention_heads=model_cfg.num_heads,
+      num_attention_heads=model_cfg.num_qo_heads,
+      num_key_value_heads=model_cfg.num_kv_heads,
       intermediate_size=model_cfg.intermediate_size,
       num_hidden_layers=model_cfg.num_layers,
   )
   model = LlamaForCausalLMWithLora(llama_config)
   #model = LlamaForCausalLMWithLora.from_pretrained("meta-llama/Llama-2-7b-chat-hf", low_cpu_mem_usage=True, torch_dtype=dtype)
-    
+
   if is_distributed():
     init_distributed()
     mp_group = create_tensor_parallel_group()
@@ -104,8 +106,8 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
   torch.set_default_dtype(default_dtype)
   kvpool = KvPool(
       num_layers=model_cfg.num_layers,
-      num_heads=model_cfg.num_heads // mp_size,
-      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      num_heads=model_cfg.num_kv_heads // mp_size,
+      head_dim=model_cfg.hidden_size // model_cfg.num_qo_heads,
       capacity=textgen_cfg.batch_size * 2048 // 16,
       block_len=16,
       dtype=dtype,
@@ -252,7 +254,8 @@ def _lora_hf_internal(model_cfg: ModelConfig, lora_cfg: LoraConfig,
     model = LlamaForCausalLM(
         LlamaConfig(
             hidden_size=model_cfg.hidden_size,
-            num_attention_heads=model_cfg.num_heads,
+            num_attention_heads=model_cfg.num_qo_heads,
+            num_key_value_heads=model_cfg.num_kv_heads,
             intermediate_size=model_cfg.intermediate_size,
             num_hidden_layers=model_cfg.num_layers,
         )).to(device)
@@ -375,9 +378,11 @@ def lora_ft_backbone(model_cfg: ModelConfig, _lora_cfg: LoraConfig,
   from .fastertransformer import build_ext
   ft = build_ext()
   rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  if model_cfg.num_qo_heads != model_cfg.num_kv_heads:
+    raise ValueError("GQA is not supported for FasterTransformer")
   model = ft.FtLlama(
-      num_heads=model_cfg.num_heads,
-      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      num_heads=model_cfg.num_qo_heads,
+      head_dim=model_cfg.hidden_size // model_cfg.num_qo_heads,
       inter_size=model_cfg.intermediate_size,
       num_layers=model_cfg.num_layers,
       dtype=model_cfg.dtype,
@@ -463,7 +468,8 @@ def lora_vllm_backbone(model_cfg: ModelConfig, lora_cfg: LoraConfig,
 
     def __init__(self, **kwargs):
       kwargs["num_hidden_layers"] = model_cfg.num_layers
-      kwargs["num_attention_heads"] = model_cfg.num_heads
+      kwargs["num_attention_heads"] = model_cfg.num_qo_heads
+      kwargs["num_kv_attention_heads"] = model_cfg.num_kv_heads
       kwargs["hidden_size"] = model_cfg.hidden_size
       kwargs["intermediate_size"] = model_cfg.intermediate_size
       kwargs["torch_dtype"] = model_cfg.dtype
@@ -573,23 +579,6 @@ BENCH_FN = {
     "ds": lora_ds,
     "ft_backbone": lora_ft_backbone,
     "vllm_backbone": lora_vllm_backbone,
-}
-
-MODEL_CFGS = {
-    "7b":
-        ModelConfig(
-            num_layers=32,
-            num_heads=32,
-            hidden_size=4096,
-            intermediate_size=11008,
-        ),
-    "13b":
-        ModelConfig(
-            num_layers=40,
-            num_heads=40,
-            hidden_size=5120,
-            intermediate_size=13824,
-        ),
 }
 
 

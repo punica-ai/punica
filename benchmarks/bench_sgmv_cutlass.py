@@ -18,8 +18,8 @@ from .benchmark_utils import bench, gc_torch, get_lora_lens
 def bench_sgmv(f):
   bs_ = list(range(1, 65))
   pop_ = ["bmm", "bgmv", "uniform", "zipf:1.5", "Nx8"]
-  h1 = 4096
-  h2 = 16
+  h1 = 16
+  h2 = 4096
   num_layers = 1
   dtype = torch.float16
   device = torch.device("cuda:0")
@@ -46,7 +46,7 @@ def bench_sgmv(f):
     gc_torch()
 
     w = [
-        torch.randn((num_layers, h2, h1), dtype=dtype, device=device)
+        torch.randn((num_layers, h1, h2), dtype=dtype, device=device)
         for _ in range(len(problem_sizes))
     ]
     w_ptr = torch.tensor([t.data_ptr() for t in w],
@@ -60,7 +60,7 @@ def bench_sgmv(f):
     y = torch.randn((s[-1], h2), dtype=dtype, device=device)
 
     latency = bench(
-        lambda: punica.ops.sgmv(y, x, w_ptr, s, layer_idx=0),
+        lambda: punica.ops.sgmv_cutlass(y, x, w_ptr, s, layer_idx=0),
         warmup=200,
         repeat=1000)
 

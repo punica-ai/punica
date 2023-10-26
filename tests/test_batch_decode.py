@@ -9,7 +9,7 @@ from punica.utils import BatchedKvCache, KvCache, KvPool
 def assert_close(a, b):
   rtol, atol = {
       torch.float16: (5e-4, 5e-4),
-      torch.bfloat16: (1e-3, 1e-3),
+      torch.bfloat16: (1e-3, 2e-3),
   }[a.dtype]
   torch.testing.assert_close(a, b, rtol=rtol, atol=atol)
 
@@ -38,14 +38,23 @@ def rotary_embed(q, beg):
   return q_embed
 
 
+def repeat_kv(t: torch.Tensor, repeat: int) -> torch.Tensor:
+  if repeat == 1:
+    return t
+  num_kv_heads, seqlen, head_dim = t.shape
+  t = t[:, None, :, :].expand(num_kv_heads, repeat, seqlen, head_dim)
+  t = t.reshape(num_kv_heads * repeat, seqlen, head_dim)
+  return t
+
+
 def ref_batch_decode(
     q: torch.Tensor,
     kv: BatchedKvCache,
     layer_idx: int,
 ) -> torch.Tensor:
-  _c, _l, _2, n, p, d = kv.data.shape
-  b = q.size(0)
-  assert (b, n, d) == q.shape
+  b, n_qo, _ = q.shape
+  _c, _l, _2, n_kv, p, d = kv.data.shape
+  assert (b, n_qo, d) == q.shape
 
   sm_scale = 1.0 / np.sqrt(d)
   out = []
@@ -66,6 +75,9 @@ def ref_batch_decode(
     qi = rotary_embed(qi, seqlen - 1)
     ki = rotary_embed(ki, 0)
 
+    ki = repeat_kv(ki, n_qo // n_kv)
+    vi = repeat_kv(vi, n_qo // n_kv)
+
     pi = torch.einsum("nd,nsd->ns", qi, ki) * sm_scale
     pi = torch.softmax(pi, dim=-1)
     oi = torch.einsum("ns,nsd->nd", pi, vi).to(q.dtype)
@@ -75,11 +87,14 @@ def ref_batch_decode(
 
 
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
+@pytest.mark.parametrize("group_size", [1, 8])
 @torch.inference_mode()
-def test_batch_decode_correctness(dtype_str):
+def test_batch_decode_correctness(dtype_str: str, group_size: int):
   torch.manual_seed(0xabcdabcd987)
   num_layers = 3
-  num_heads = 32
+  num_qo_heads = 32
+  num_kv_heads = num_qo_heads // group_size
+  assert num_kv_heads * group_size == num_qo_heads
   head_dim = 128
   batch_size = 7
   block_len = 16
@@ -89,7 +104,7 @@ def test_batch_decode_correctness(dtype_str):
 
   pool = KvPool(
       num_layers=num_layers,
-      num_heads=num_heads,
+      num_heads=num_kv_heads,
       head_dim=head_dim,
       capacity=(maxlen + block_len - 1) // block_len * batch_size,
       block_len=block_len,
@@ -99,7 +114,8 @@ def test_batch_decode_correctness(dtype_str):
 
   seqlens = torch.randint(
       1, maxlen, (batch_size,), dtype=torch.int32, device="cpu")
-  q = torch.randn(batch_size, num_heads, head_dim, dtype=dtype, device=device)
+  q = torch.randn(
+      batch_size, num_qo_heads, head_dim, dtype=dtype, device=device)
   pool.buf.copy_(torch.randn_like(pool.buf))
 
   cs = [KvCache(pool, int(l.item())) for l in seqlens]

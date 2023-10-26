@@ -80,29 +80,38 @@ class BatchedLlamaLoraWeight:
     self.rank = weights[0].q.lora_rank
 
 
+def repeat_kv(t: torch.Tensor, repeat: int) -> torch.Tensor:
+  if repeat == 1:
+    return t
+  num_kv_heads, seqlen, head_dim = t.shape
+  t = t[:, None, :, :].expand(num_kv_heads, repeat, seqlen, head_dim)
+  t = t.reshape(num_kv_heads * repeat, seqlen, head_dim)
+  return t
+
+
 class LlamaAttentionWithLora(nn.Module):
 
   def __init__(self, config: LlamaConfig, layer_idx: int):
     super().__init__()
     self.config = config
     self.hidden_size = config.hidden_size
-    self.num_heads = config.num_attention_heads
-    self.head_dim = self.hidden_size // self.num_heads
+    self.num_qo_heads = config.num_attention_heads
+    self.num_kv_heads = config.num_key_value_heads
+    self.num_kv_groups = self.num_qo_heads // self.num_kv_heads
+    self.head_dim = self.hidden_size // self.num_qo_heads
     self._scale = 1 / math.sqrt(self.head_dim)
     self.layer_idx = layer_idx
 
-    if (self.head_dim * self.num_heads) != self.hidden_size:
-      raise ValueError(
-          f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-          f" and `num_heads`: {self.num_heads}).")
+    assert self.head_dim * self.num_qo_heads == self.hidden_size
+    assert self.num_kv_heads * self.num_kv_groups == self.num_qo_heads
     self.q_proj = nn.Linear(
-        self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.hidden_size, self.num_qo_heads * self.head_dim, bias=False)
     self.k_proj = nn.Linear(
-        self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
     self.v_proj = nn.Linear(
-        self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
     self.o_proj = nn.Linear(
-        self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        self.num_qo_heads * self.head_dim, self.hidden_size, bias=False)
 
   def forward(
       self,
@@ -134,8 +143,8 @@ class LlamaAttentionWithLora(nn.Module):
       assert prefill_kv is not None
       init_kv(
           prefill_kv,
-          k_proj[:blen.doff].view(-1, self.num_heads, self.head_dim),
-          v_proj[:blen.doff].view(-1, self.num_heads, self.head_dim),
+          k_proj[:blen.doff].view(-1, self.num_kv_heads, self.head_dim),
+          v_proj[:blen.doff].view(-1, self.num_kv_heads, self.head_dim),
           blen.indptr,
           self.layer_idx,
       )
@@ -147,11 +156,11 @@ class LlamaAttentionWithLora(nn.Module):
       for batch_idx, q_len in enumerate(blen.prefills):
         torch.cuda.nvtx.range_push(f"batch_idx={batch_idx}")
         torch.cuda.nvtx.range_push("transpose")
-        query_states = q_projs[batch_idx].view(1, q_len, self.num_heads,
+        query_states = q_projs[batch_idx].view(1, q_len, self.num_qo_heads,
                                                self.head_dim).transpose(1, 2)
-        key_states = k_projs[batch_idx].view(1, q_len, self.num_heads,
+        key_states = k_projs[batch_idx].view(1, q_len, self.num_kv_heads,
                                              self.head_dim).transpose(1, 2)
-        value_states = v_projs[batch_idx].view(1, q_len, self.num_heads,
+        value_states = v_projs[batch_idx].view(1, q_len, self.num_kv_heads,
                                                self.head_dim).transpose(1, 2)
         # (1, n, s, d)
         torch.cuda.nvtx.range_pop()
@@ -165,6 +174,10 @@ class LlamaAttentionWithLora(nn.Module):
         value_states = value_states.squeeze(0)
         # (n, s, d)
 
+        # GQA
+        key_states = repeat_kv(key_states, self.num_kv_groups)
+        value_states = repeat_kv(value_states, self.num_kv_groups)
+
         # scaled dot product attention
         torch.cuda.nvtx.range_push("sdpa")
         attn_output = torch.nn.functional.scaled_dot_product_attention(
@@ -176,9 +189,9 @@ class LlamaAttentionWithLora(nn.Module):
         torch.cuda.nvtx.range_pop()
 
     if blen.decode > 0:
-      q = q_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
-      k = k_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
-      v = v_proj[blen.doff:].view(blen.decode, self.num_heads, self.head_dim)
+      q = q_proj[blen.doff:].view(blen.decode, self.num_qo_heads, self.head_dim)
+      k = k_proj[blen.doff:].view(blen.decode, self.num_kv_heads, self.head_dim)
+      v = v_proj[blen.doff:].view(blen.decode, self.num_kv_heads, self.head_dim)
 
       torch.cuda.nvtx.range_push("append_kv")
       assert decode_kv is not None

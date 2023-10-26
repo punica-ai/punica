@@ -11,6 +11,8 @@ __all__ = [
     "add_lora",
     "sgmv_cutlass",
     "add_lora_sgmv_cutlass",
+    "sgmv",
+    "add_lora_sgmv",
     "rms_norm",
 ]
 
@@ -39,11 +41,9 @@ def mha_rope_decode(
     Shape: `[batch_size, num_heads, head_dim]`. \
     Output of the multi-head attention.
   """
-  f = _kernels.batch_decode
-  device = q.device
-  dtype = q.dtype
-  o = torch.empty(q.shape, dtype=dtype, device=device)
-  f(o, q, kv.data, kv.indptr, kv.indicies, kv.last_page_offset, layer_idx)
+  o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+  _kernels.batch_decode(o, q, kv.data, kv.indptr, kv.indicies,
+                        kv.last_page_offset, layer_idx)
   return o
 
 
@@ -187,6 +187,32 @@ def add_lora_sgmv_cutlass(
   v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
   _kernels.sgmv_cutlass(v, x, wa_ptr, s, tmp, layer_idx)
   _kernels.sgmv_cutlass(y, v, wb_ptr, s, tmp, layer_idx)
+
+
+def sgmv(
+    y: torch.Tensor,
+    x: torch.Tensor,
+    w_ptr: torch.Tensor,
+    s: torch.IntTensor,
+    layer_idx: int,
+):
+  tmp = torch.empty((8 * 1024 * 1024,), dtype=torch.uint8, device=x.device)
+  _kernels.sgmv_shrink(y, x, w_ptr, s, tmp, layer_idx)
+
+
+def add_lora_sgmv(
+    y: torch.Tensor,
+    x: torch.Tensor,
+    wa_ptr: torch.Tensor,
+    wb_ptr: torch.Tensor,
+    s: torch.IntTensor,
+    layer_idx: int,
+    lora_rank: int,
+):
+  tmp = torch.empty((8 * 1024 * 1024,), dtype=torch.uint8, device=x.device)
+  v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
+  _kernels.sgmv_shrink(v, x, wa_ptr, s, tmp, layer_idx)
+  _kernels.sgmv_shrink(v, x, wa_ptr, s, tmp, layer_idx)  # TODO: expand
 
 
 def rms_norm(
