@@ -46,7 +46,8 @@ def generate_request_set(num_requests: int, maxlen: int) -> RequestSet:
 @dataclasses.dataclass
 class ModelConfig:
   num_layers: int
-  num_heads: int
+  num_qo_heads: int
+  num_kv_heads: int
   hidden_size: int
   intermediate_size: int
   dtype: str = dataclasses.field(default="float16")
@@ -79,7 +80,8 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     model = LlamaForCausalLM(
         LlamaConfig(
             hidden_size=model_cfg.hidden_size,
-            num_attention_heads=model_cfg.num_heads,
+            num_attention_heads=model_cfg.num_qo_heads,
+            num_key_value_heads=model_cfg.num_kv_heads,
             intermediate_size=model_cfg.intermediate_size,
             num_hidden_layers=model_cfg.num_layers,
         )).to(device)
@@ -87,8 +89,8 @@ def textgen_punica(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
 
   kvpool = KvPool(
       num_layers=model_cfg.num_layers,
-      num_heads=model_cfg.num_heads,
-      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      num_heads=model_cfg.num_kv_heads,
+      head_dim=model_cfg.hidden_size // model_cfg.num_qo_heads,
       capacity=textgen_cfg.batch_size * 2048 // 16,
       block_len=16,
       dtype=dtype,
@@ -211,7 +213,8 @@ def _textgen_hf_pad_internal(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
     model = LlamaForCausalLM(
         LlamaConfig(
             hidden_size=model_cfg.hidden_size,
-            num_attention_heads=model_cfg.num_heads,
+            num_attention_heads=model_cfg.num_qo_heads,
+            num_key_value_heads=model_cfg.num_kv_heads,
             intermediate_size=model_cfg.intermediate_size,
             num_hidden_layers=model_cfg.num_layers,
         )).to(device)
@@ -302,9 +305,11 @@ def textgen_ft_pad(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
   from .fastertransformer import build_ext
   ft = build_ext()
   rng = np.random.Generator(np.random.PCG64(seed=0xabcdabcd987))
+  if model_cfg.num_qo_heads != model_cfg.num_kv_heads:
+    raise ValueError("GQA is not supported for FasterTransformer")
   model = ft.FtLlama(
-      num_heads=model_cfg.num_heads,
-      head_dim=model_cfg.hidden_size // model_cfg.num_heads,
+      num_heads=model_cfg.num_qo_heads,
+      head_dim=model_cfg.hidden_size // model_cfg.num_qo_heads,
       inter_size=model_cfg.intermediate_size,
       num_layers=model_cfg.num_layers,
       dtype=model_cfg.dtype,
@@ -373,7 +378,8 @@ def textgen_vllm(model_cfg: ModelConfig, textgen_cfg: TextGenConfig,
 
     def __init__(self, **kwargs):
       kwargs["num_hidden_layers"] = model_cfg.num_layers
-      kwargs["num_attention_heads"] = model_cfg.num_heads
+      kwargs["num_attention_heads"] = model_cfg.num_qo_heads
+      kwargs["num_kv_attention_heads"] = model_cfg.num_kv_heads
       kwargs["hidden_size"] = model_cfg.hidden_size
       kwargs["intermediate_size"] = model_cfg.intermediate_size
       kwargs["torch_dtype"] = model_cfg.dtype
@@ -475,16 +481,34 @@ MODEL_CFGS = {
     "7b":
         ModelConfig(
             num_layers=32,
-            num_heads=32,
+            num_qo_heads=32,
+            num_kv_heads=32,
             hidden_size=4096,
             intermediate_size=11008,
         ),
     "13b":
         ModelConfig(
             num_layers=40,
-            num_heads=40,
+            num_qo_heads=40,
+            num_kv_heads=40,
             hidden_size=5120,
             intermediate_size=13824,
+        ),
+    "70b-1layer":
+        ModelConfig(
+            num_layers=1,
+            num_qo_heads=64,
+            num_kv_heads=8,
+            hidden_size=8192,
+            intermediate_size=28672,
+        ),
+    "70b":
+        ModelConfig(
+            num_layers=80,
+            num_qo_heads=64,
+            num_kv_heads=8,
+            hidden_size=8192,
+            intermediate_size=28672,
         ),
 }
 
