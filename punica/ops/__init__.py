@@ -41,11 +41,9 @@ def mha_rope_decode(
     Shape: `[batch_size, num_heads, head_dim]`. \
     Output of the multi-head attention.
   """
-  f = _kernels.batch_decode
-  device = q.device
-  dtype = q.dtype
-  o = torch.empty(q.shape, dtype=dtype, device=device)
-  f(o, q, kv.data, kv.indptr, kv.indicies, kv.last_page_offset, layer_idx)
+  o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+  _kernels.batch_decode(o, q, kv.data, kv.indptr, kv.indicies,
+                        kv.last_page_offset, layer_idx)
   return o
 
 

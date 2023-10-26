@@ -1,32 +1,25 @@
 #pragma once
 
-template <int head_dim, typename T>
-void FlashInferBatchDecodeKernel(T* __restrict__ o, T* __restrict__ q,
-                                 T* __restrict__ kv_data,
-                                 int32_t* __restrict__ kv_indptr,
-                                 int32_t* __restrict__ kv_indicies,
-                                 int32_t* __restrict__ last_page_offset,
-                                 int num_layers, int layer_idx, int num_heads,
+template <typename T>
+void FlashInferBatchDecodeKernel(T* o, T* q, T* kv_data, int32_t* kv_indptr,
+                                 int32_t* kv_indicies,
+                                 int32_t* last_page_offset, int head_dim,
+                                 int num_layers, int layer_idx,
+                                 int num_qo_heads, int num_kv_heads,
                                  int page_size, int batch_size);
 
 template <int head_dim, typename T>
-void FlashInferInitKvKernel(T* __restrict__ kv_data,
-                            int32_t* __restrict__ kv_indptr,
-                            int32_t* __restrict__ kv_indicies,
-                            int32_t* __restrict__ last_page_offset,
-                            T* __restrict__ key, T* __restrict__ value,
-                            int32_t* __restrict__ seqlen_indptr, int num_layers,
-                            int layer_idx, int num_heads, int page_size,
-                            int batch_size);
+void FlashInferInitKvKernel(T* kv_data, int32_t* kv_indptr,
+                            int32_t* kv_indicies, int32_t* last_page_offset,
+                            T* key, T* value, int32_t* seqlen_indptr,
+                            int num_layers, int layer_idx, int num_kv_heads,
+                            int page_size, int batch_size);
 
 template <int head_dim, typename T>
-void FlashInferAppendKvKernel(T* __restrict__ kv_data,
-                              int32_t* __restrict__ kv_indptr,
-                              int32_t* __restrict__ kv_indicies,
-                              int32_t* __restrict__ last_page_offset,
-                              T* __restrict__ key, T* __restrict__ value,
-                              int num_layers, int layer_idx, int num_heads,
-                              int page_size, int batch_size);
+void FlashInferAppendKvKernel(T* kv_data, int32_t* kv_indptr,
+                              int32_t* kv_indicies, int32_t* last_page_offset,
+                              T* key, T* value, int num_layers, int layer_idx,
+                              int num_kv_heads, int page_size, int batch_size);
 
 // clang-format off
 
