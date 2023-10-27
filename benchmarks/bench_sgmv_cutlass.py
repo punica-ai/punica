@@ -17,21 +17,16 @@ from .benchmark_utils import bench, gc_torch, get_lora_lens
 @torch.inference_mode()
 def bench_sgmv(f):
   bs_ = list(range(1, 65))
-  pop_ = ["bmm", "bgmv", "uniform", "zipf:1.5", "Nx8"]
-  h1 = 16
+  pop_ = ["bmm", "bgmv", "uniform", "zipf:1.5"]
+  h1_ = [8, 16, 32, 64]
   h2 = 4096
   num_layers = 1
   dtype = torch.float16
   device = torch.device("cuda:0")
 
-  all_ = list(itertools.product(pop_, bs_))
-  for pop, bs in (pbar := tqdm(all_)):
-    if pop == "Nx8":
-      if bs % 8 != 0:
-        continue
-      problem_sizes = [(bs // 8)] * 8
-    else:
-      problem_sizes = get_lora_lens(bs, pop)
+  all_ = list(itertools.product(h1_, pop_, bs_))
+  for h1, pop, bs in (pbar := tqdm(all_)):
+    problem_sizes = get_lora_lens(bs, pop)
 
     setup = dict(
         h1=h1,
