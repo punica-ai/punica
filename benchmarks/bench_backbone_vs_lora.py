@@ -22,19 +22,34 @@ def bench_backbone_vs_lora(f):
   r = 16
   bs_list = np.arange(1, 65)
 
-  res = dict(backbone_avg=[], backbone_std=[], lora_avg=[], lora_std=[])
+  res = dict(
+      backbone_avg=[],
+      backbone_std=[],
+      single_lora_avg=[],
+      single_lora_std=[],
+      multi_lora_avg=[],
+      multi_lora_std=[],
+  )
   for bs in tqdm(bs_list):
     w = torch.randn(h1, h2, dtype=dtype, device=device)
     wa = torch.randn(h1, r, dtype=dtype, device=device)
     wb = torch.randn(r, h2, dtype=dtype, device=device)
     x = torch.randn(bs, 1, h1, dtype=dtype, device=device)
 
+    def muti_lora():
+      for i in range(bs):
+        x[i] @ wa @ wb
+
     l_backbone = bench(lambda: x @ w, warmup=200, repeat=500)
-    l_lora = bench(lambda: x @ wa @ wb, warmup=200, repeat=500)
+    l_single_lora = bench(lambda: x @ wa @ wb, warmup=200, repeat=500)
+    l_multi_lora = bench(muti_lora, warmup=200, repeat=500)
+
     res["backbone_avg"].append(l_backbone.avg())
     res["backbone_std"].append(l_backbone.std())
-    res["lora_avg"].append(l_lora.avg())
-    res["lora_std"].append(l_lora.std())
+    res["single_lora_avg"].append(l_single_lora.avg())
+    res["single_lora_std"].append(l_single_lora.std())
+    res["multi_lora_avg"].append(l_multi_lora.avg())
+    res["multi_lora_std"].append(l_multi_lora.std())
 
   json.dump(res, f)
 
