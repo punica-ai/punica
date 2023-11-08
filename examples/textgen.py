@@ -26,6 +26,7 @@ class TextGeneration:
     self.max_new_tokens = max_new_tokens
     self.stop_token_id = stop_token_id
 
+    # Logits processing adapted from: https://github.com/lm-sys/FastChat/blob/bb7ca37c2bfad629ba4751dec188bdcdc2cf0c81/fastchat/serve/inference.py
     self.logits_processor = transformers.LogitsProcessorList()
     if temperature > 0 and temperature != 1.0:
       self.logits_processor.append(

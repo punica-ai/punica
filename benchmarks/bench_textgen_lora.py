@@ -171,6 +171,7 @@ def lora_punica(model_cfg: ModelConfig, lora_cfg: LoraConfig,
                                   lora_lens)
     logits, _ = model(input_ids, blen, prefill_kv, decode_kv, lora)
     t2 = time.perf_counter()
+    pbar.set_postfix({"bs": len(newreqs) + len(workset)})
 
     # Post-process prefill
     new_workset: list[RequestContext] = []
