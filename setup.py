@@ -38,12 +38,12 @@ ext_modules.append(
     torch_cpp_ext.CUDAExtension(
         name="punica.ops._kernels",
         sources=[
-            "punica/ops/csrc/punica_ops.cc",
-            "punica/ops/csrc/bgmv/bgmv_all.cu",
-            "punica/ops/csrc/flashinfer_adapter/flashinfer_all.cu",
-            "punica/ops/csrc/rms_norm/rms_norm_cutlass.cu",
-            "punica/ops/csrc/sgmv/sgmv_cutlass.cu",
-            "punica/ops/csrc/sgmv_flashinfer/sgmv_all.cu",
+            "csrc/punica_ops.cc",
+            "csrc/bgmv/bgmv_all.cu",
+            "csrc/flashinfer_adapter/flashinfer_all.cu",
+            "csrc/rms_norm/rms_norm_cutlass.cu",
+            "csrc/sgmv/sgmv_cutlass.cu",
+            "csrc/sgmv_flashinfer/sgmv_all.cu",
         ],
         include_dirs=[str(root.resolve() / "third_party/cutlass/include")],
     ))
