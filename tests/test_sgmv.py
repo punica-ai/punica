@@ -119,5 +119,5 @@ def test_lora_correctness(dtype_str, batch_setup):
     y_ref = y.clone()
     lora_ref_impl(y_ref, x, wa, wb, s, layer_idx)
     y_our = y.clone()
-    punica.ops.add_lora(y_our, x, wa_ptr, wb_ptr, s, layer_idx, r)
+    punica.ops.add_lora_bgmv(y_our, x, wa_ptr, wb_ptr, s, layer_idx, r)
     assert_close(y_ref, y_our)

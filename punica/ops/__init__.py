@@ -8,7 +8,7 @@ __all__ = [
     "init_kv",
     "append_kv",
     "bgmv",
-    "add_lora",
+    "add_lora_bgmv",
     "sgmv_cutlass",
     "add_lora_sgmv_cutlass",
     "sgmv",
@@ -23,10 +23,10 @@ def batch_decode(
     layer_idx: int,
 ) -> torch.Tensor:
   """
-  Perform multi-head attention with rotary position encoding
+  Perform self-attention with rotary position encoding
   for each input in the batch.
 
-  All inputs in the batch should be in the decoding (auto-regression) stage,
+  All inputs in the batch should be in the decode stage,
   i.e., each input should only have one token.
 
   Both `q` and the `k` in `kv` should NOT be position encoded.
@@ -124,7 +124,7 @@ def bgmv(
   f(y, x, w_T_all, indicies, layer_idx, scale)
 
 
-def add_lora(
+def add_lora_bgmv(
     y: torch.Tensor,
     x: torch.Tensor,
     wa_T_all: torch.Tensor,
@@ -168,6 +168,19 @@ def sgmv_cutlass(
     s: torch.IntTensor,
     layer_idx: int,
 ):
+  """
+  Semantics:
+    y[s[i]:s[i+1]] += x[s[i]:s[i+1]] @ deref(w_ptr[i])
+
+  Args:
+    y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+    x: Shape: `[B, H1]`. Input vectors.
+    w_ptr: Shape: `[S]`. DType: torch.int64. Pointer to the weight matrices.\
+      Weight matrix shape: `[num_layers, H1, H2]`.
+    s: Shape: `[S+1]`, DType: torch.int32. Indptr of the weight matrices.\
+      `s[0] == 0`, `s[-1] == B`.
+    layer_idx: Layer index of the weight matrices.
+  """
   tmp_size = _kernels.sgmv_cutlass_tmp_size(w_ptr.size(0))
   tmp = torch.empty((tmp_size,), dtype=torch.uint8, device=x.device)
   _kernels.sgmv_cutlass(y, x, w_ptr, s, tmp, layer_idx)
@@ -182,6 +195,21 @@ def add_lora_sgmv_cutlass(
     layer_idx: int,
     lora_rank: int,
 ):
+  """
+  Semantics:
+    y[s[i]:s[i+1]] += x[s[i]:s[i+1]] @ deref(wa_ptr[i]) @ deref(wb_ptr[i])
+
+  Args:
+    y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+    x: Shape: `[B, H1]`. Input vectors.
+    wa_ptr: Shape: `[S]`. DType: torch.int64. Pointer to the weight matrices.\
+      Weight matrix shape: `[num_layers, H1, R]`.
+    wb_ptr: Shape: `[S]`. DType: torch.int64. Pointer to the weight matrices.\
+      Weight matrix shape: `[num_layers, R, H2]`.
+    s: Shape: `[S+1]`, DType: torch.int32. Indptr of the weight matrices.\
+      `s[0] == 0`, `s[-1] == B`.
+    layer_idx: Layer index of the weight matrices.
+  """
   tmp_size = _kernels.sgmv_cutlass_tmp_size(wa_ptr.size(0))
   tmp = torch.empty((tmp_size,), dtype=torch.uint8, device=x.device)
   v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
@@ -198,6 +226,7 @@ def sgmv(
 ):
   tmp = torch.empty((8 * 1024 * 1024,), dtype=torch.uint8, device=x.device)
   _kernels.sgmv_shrink(y, x, w_ptr, s, tmp, layer_idx)
+  raise NotImplementedError("TODO: sgmv_expand")
 
 
 def add_lora_sgmv(
@@ -212,7 +241,7 @@ def add_lora_sgmv(
   tmp = torch.empty((8 * 1024 * 1024,), dtype=torch.uint8, device=x.device)
   v = torch.zeros((x.size(0), lora_rank), dtype=x.dtype, device=x.device)
   _kernels.sgmv_shrink(v, x, wa_ptr, s, tmp, layer_idx)
-  _kernels.sgmv_shrink(v, x, wa_ptr, s, tmp, layer_idx)  # TODO: expand
+  raise NotImplementedError("TODO: sgmv_expand")
 
 
 def rms_norm(
