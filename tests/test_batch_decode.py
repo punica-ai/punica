@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from punica.ops import mha_rope_decode
+from punica.ops import batch_decode
 from punica.utils import BatchedKvCache, KvCache, KvPool
 
 
@@ -123,5 +123,5 @@ def test_batch_decode_correctness(dtype_str: str, group_size: int):
 
   for layer_idx in range(num_layers):
     o_ref = ref_batch_decode(q, kv, layer_idx)
-    o_our = mha_rope_decode(q, kv, layer_idx)
+    o_our = batch_decode(q, kv, layer_idx)
     assert_close(o_ref, o_our)

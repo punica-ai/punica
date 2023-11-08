@@ -4,7 +4,7 @@ import punica.ops._kernels as _kernels
 from punica.utils.kvcache import BatchedKvCache
 
 __all__ = [
-    "mha_rope_decode",
+    "batch_decode",
     "init_kv",
     "append_kv",
     "bgmv",
@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 
-def mha_rope_decode(
+def batch_decode(
     q: torch.Tensor,
     kv: BatchedKvCache,
     layer_idx: int,

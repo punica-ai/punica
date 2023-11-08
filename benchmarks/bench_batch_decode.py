@@ -82,7 +82,7 @@ def bench_batch_decode(f):
         device=device,
     )
     latency = bench(
-        lambda: punica.ops.mha_rope_decode(res.q, res.kv, layer_idx=0))
+        lambda: punica.ops.batch_decode(res.q, res.kv, layer_idx=0))
     res.release()
 
     result = {

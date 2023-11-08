@@ -13,7 +13,7 @@ from transformers.models.llama.modeling_llama import (
     rotate_half,
 )
 
-from punica.ops import append_kv, init_kv, mha_rope_decode, rms_norm, add_lora_sgmv_cutlass as add_lora
+from punica.ops import append_kv, init_kv, batch_decode, rms_norm, add_lora_sgmv_cutlass as add_lora
 from punica.utils import BatchedKvCache, BatchLenInfo, LoraWeight, BatchedLoraWeight
 
 
@@ -199,7 +199,7 @@ class LlamaAttentionWithLora(nn.Module):
       torch.cuda.nvtx.range_pop()
 
       torch.cuda.nvtx.range_push(f"batch_decode")
-      attn_outputs = mha_rope_decode(q, decode_kv, self.layer_idx)
+      attn_outputs = batch_decode(q, decode_kv, self.layer_idx)
       attn_outputs = attn_outputs.view(blen.decode, self.hidden_size)
       stack_attn_output.append(attn_outputs)
       torch.cuda.nvtx.range_pop()
