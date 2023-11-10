@@ -16,7 +16,7 @@ We figured out an efficient way to compute the right-hand-side (the LoRA addon).
 
 <p align="center"><img src="assets/sgmv.png" alt="SGMV" style="width: 400px;"></p>
 
-In the following microbenchmark figure, we can observe the strong batching effect of the pretrained model. Naive implementation of LoRA is slow, as depicted in the orange line. LoRA implemented via SGMV is effificent and preserves the strong batching effect.
+In the following microbenchmark figure, we can observe the strong batching effect of the pretrained model. Naive implementation of LoRA is slow, as depicted in the orange line. LoRA implemented via SGMV is efficient and preserves the strong batching effect.
 
 <p align="center"><img src="assets/backbone-vs-sgmv.png" alt="SGMV is fast and maintains strong batching effect" style="width: 400px;"></p>
 
