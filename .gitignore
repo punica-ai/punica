@@ -7,3 +7,5 @@ __pycache__/
 *.egg-info/
 *.py[cod]
 *.so
+dist/
+.pytest_cache/

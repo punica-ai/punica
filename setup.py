@@ -49,15 +49,7 @@ ext_modules.append(
     ))
 
 setuptools.setup(
-    name="punica",
     version=get_version(root / "punica/__init__.py"),
-    author="Punica Team",
-    license="Apache License 2.0",
-    description="Punica: System for serving Large Language Models",
-    url="https://github.com/abcdabcd987/punica",
-    packages=setuptools.find_packages(
-        exclude=("assets", "benchmarks", "csrc", "docs", "examples", "tests")),
-    python_requires=">=3.8",
     ext_modules=ext_modules,
     cmdclass={"build_ext": torch_cpp_ext.BuildExtension},
 )

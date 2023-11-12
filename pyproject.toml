@@ -1,3 +1,47 @@
+[build-system]
+requires = ["setuptools", "torch", "numpy", "ninja", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "punica"
+description = "Punica: System for serving Large Language Models."
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["pytorch", "llm", "lora", "transformer"]
+dynamic = ["version"]
+dependencies = [
+    "torch",
+    "transformers",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "yapf",
+    "pytz",
+    "tqdm",
+    "scipy",
+    "peft",
+]
+
+[tool.setuptools.packages.find]
+include = ["punica*"]
+exclude = [
+    "assets",
+    "benchmarks",
+    "csrc",
+    "data",
+    "dist",
+    "examples",
+    "test",
+    "third_party",
+    "tmp",
+    "*__pycache__*",
+]
+namespaces = false
+
+
 [tool.yapf]
 based_on_style = "yapf"
 
