@@ -27,6 +27,19 @@ The following figure shows the text generation throughput comparison between Pun
 Read our paper to understand more: [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547).
 
 
+## Install
+
+```bash
+git clone https://github.com/punica-ai/punica.git
+cd punica
+git submodule sync
+git submodule update --init --recursive
+
+pip install ninja torch
+pip install -v --no-build-isolation .
+```
+
+
 ## Citation
 
 ```bibtex

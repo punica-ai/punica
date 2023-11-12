@@ -23,6 +23,7 @@ dev = [
     "tqdm",
     "scipy",
     "peft",
+    "accelerate",
 ]
 
 [tool.setuptools.packages.find]
