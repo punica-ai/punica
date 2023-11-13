@@ -1,0 +1,25 @@
+{
+    "gsm8k": {
+        "hf_hub_url": "gsm8k",
+        "subset": "main",
+        "columns": {
+            "prompt": "question",
+            "response": "answer"
+        }
+    },
+    "viggo": {
+        "hf_hub_url": "GEM/viggo",
+        "columns": {
+            "prompt": "meaning_representation",
+            "response": "target"
+        }
+    },
+    "sqlctx": {
+        "hf_hub_url": "b-mc2/sql-create-context",
+        "columns": {
+            "prompt": "context",
+            "query": "question",
+            "response": "answer"
+        }
+    }
+}

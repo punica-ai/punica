@@ -59,6 +59,15 @@ class LlamaLoraWeight:
     self.down = LoraWeight(config.num_hidden_layers, config.intermediate_size,
                            config.hidden_size, lora_rank, dtype, device)
 
+  def copy_from_tensors(self, ts: dict[str, torch.Tensor]):
+    self.q.copy_from_tensor(ts["q.A"], ts["q.B"])
+    self.k.copy_from_tensor(ts["k.A"], ts["k.B"])
+    self.v.copy_from_tensor(ts["v.A"], ts["v.B"])
+    self.o.copy_from_tensor(ts["o.A"], ts["o.B"])
+    self.gate.copy_from_tensor(ts["gate.A"], ts["gate.B"])
+    self.up.copy_from_tensor(ts["up.A"], ts["up.B"])
+    self.down.copy_from_tensor(ts["down.A"], ts["down.B"])
+
 
 class BatchedLlamaLoraWeight:
 

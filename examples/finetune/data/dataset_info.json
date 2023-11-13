@@ -1,0 +1,23 @@
+{
+    "gsm8k": {
+        "file_name": "gsm8k-train.jsonl",
+        "columns": {
+            "prompt": "prompt",
+            "response": "response"
+        }
+    },
+    "viggo": {
+        "file_name": "viggo-train.jsonl",
+        "columns": {
+            "prompt": "prompt",
+            "response": "response"
+        }
+    },
+    "sqlctx": {
+        "file_name": "sqlctx-train.jsonl",
+        "columns": {
+            "prompt": "prompt",
+            "response": "response"
+        }
+    }
+}

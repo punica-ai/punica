@@ -9,3 +9,6 @@ __pycache__/
 *.so
 dist/
 .pytest_cache/
+LLaMA-Factory/
+wandb/
+model/

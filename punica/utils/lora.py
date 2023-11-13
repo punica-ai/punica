@@ -19,12 +19,16 @@ class LoraWeight:
       dtype: torch.dtype,
       device: torch.device,
   ):
-    self.wa = torch.empty((num_layers, in_features, lora_rank),
+    self.wa = torch.zeros((num_layers, in_features, lora_rank),
                           dtype=dtype,
                           device=device)
-    self.wb = torch.empty((num_layers, lora_rank, out_features),
+    self.wb = torch.zeros((num_layers, lora_rank, out_features),
                           dtype=dtype,
                           device=device)
+
+  def copy_from_tensor(self, a: torch.Tensor, b: torch.Tensor):
+    self.wa.copy_(a.to(self.wa.device).to(self.wa.dtype).transpose(1, 2))
+    self.wb.copy_(b.to(self.wb.device).to(self.wb.dtype).transpose(1, 2))
 
   @property
   def device(self) -> torch.device:
