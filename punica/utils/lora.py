@@ -19,15 +19,24 @@ class LoraWeight:
       dtype: torch.dtype,
       device: torch.device,
   ):
-    self.wa = torch.zeros((num_layers, in_features, lora_rank),
+    # SGMV-Shrink custom CUDA kernel uses column-major.
+    self.wa = torch.zeros((num_layers, lora_rank, in_features),
                           dtype=dtype,
                           device=device)
+    # SGMV-Expand cutlass kernel uses row-major.
     self.wb = torch.zeros((num_layers, lora_rank, out_features),
                           dtype=dtype,
                           device=device)
 
   def copy_from_tensor(self, a: torch.Tensor, b: torch.Tensor):
-    self.wa.copy_(a.to(self.wa.device).to(self.wa.dtype).transpose(1, 2))
+    """
+    Copy from column-major weight tensors.
+
+    Args:
+      a: Shape: `[num_layers, lora_rank, in_features]`.
+      b: Shape: `[num_layers, out_features, lora_rank]`.
+    """
+    self.wa.copy_(a.to(self.wa.device).to(self.wa.dtype))
     self.wb.copy_(b.to(self.wb.device).to(self.wb.dtype).transpose(1, 2))
 
   @property
@@ -44,7 +53,7 @@ class LoraWeight:
 
   @property
   def in_features(self) -> int:
-    return self.wa.size(1)
+    return self.wa.size(2)
 
   @property
   def out_features(self) -> int:
@@ -52,7 +61,7 @@ class LoraWeight:
 
   @property
   def lora_rank(self) -> int:
-    return self.wa.size(2)
+    return self.wa.size(1)
 
 
 class BatchedLoraWeight:

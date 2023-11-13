@@ -13,7 +13,7 @@ from transformers.models.llama.modeling_llama import (
     rotate_half,
 )
 
-from punica.ops import append_kv, init_kv, batch_decode, rms_norm, add_lora_sgmv_cutlass as add_lora
+from punica.ops import append_kv, init_kv, batch_decode, rms_norm, add_lora_sgmv_custom_cutlass as add_lora
 from punica.utils import BatchedKvCache, BatchLenInfo, LoraWeight, BatchedLoraWeight
 
 
