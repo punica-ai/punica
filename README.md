@@ -2,6 +2,16 @@
 
 [(paper)](https://arxiv.org/abs/2310.18547)
 
+## Demo
+
+<video controls style="width: 400px; text-align: center;">
+  <source src="assets/punica-tui-demo.mp4" type="video/mp4">
+</video>
+
+```bash
+python example/tui-multi-lora.py
+```
+
 ## Overview
 
 [Low rank adapation](https://arxiv.org/abs/2106.09685) (LoRA) is a parameter efficient way to add new knowledge to a pretrained LLM. Although the pretrained LLM takes 100s of GB storage, a LoRA finetuned model only adds 1% storage and memory overhead. Punica enables running multiple LoRA finetuned models at the cost of running one.
@@ -37,6 +47,22 @@ git submodule update --init --recursive
 
 pip install ninja torch
 pip install -v --no-build-isolation .
+```
+
+## Examples
+
+### Serving multiple LoRA models
+
+See the demo above.
+
+### Finetune & convert to Punica format & serve with Punica
+
+See [`examples/finetune/`](examples/finetune/)
+
+### Benchmark text generation
+
+```bash
+python -m benchmarks.bench_textgen_lora --system punica --batch-size 32
 ```
 
 

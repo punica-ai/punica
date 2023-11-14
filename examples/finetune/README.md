@@ -58,7 +58,7 @@ It takes 2/2=<<2/2=1>>1 bolt of white fiber
 So the total amount of fabric is 2+1=<<2+1=3>>3 bolts of fabric
 #### 3
 
-SELECT T1.student_id, T2.course_name FROM student_course_registrations AS T1 JOIN courses AS T2 ON T1.course_id = T2.course_id
+SELECT T2.student_details FROM student_course_registrations AS T1 JOIN students AS T2 ON T1.student_id = T2.student_id ORDER BY T1.registration_date DESC LIMIT 1
 
 You mentioned that you greatly enjoyed Metal Gear Solid 3: Snake Eater. Would you say you're a big fan of action-adventure games from 2004 involving shooting and tactical gameplay?
 ```
