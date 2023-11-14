@@ -4,7 +4,7 @@
 
 ## Demo
 
-https://github.com/punica-ai/punica/raw/14f73111edfa6f1e49e24feba3d6c3bced0825d6/assets/punica-tui-demo.mp4
+[punica-tui-demo.webm](https://github.com/punica-ai/punica/assets/2470081/532c6114-9322-4d53-ae88-1d0f44dc960f)
 
 ```bash
 python example/tui-multi-lora.py
