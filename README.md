@@ -4,9 +4,7 @@
 
 ## Demo
 
-<video controls style="width: 400px; text-align: center;">
-  <source src="assets/punica-tui-demo.mp4" type="video/mp4">
-</video>
+https://github.com/punica-ai/punica/raw/14f73111edfa6f1e49e24feba3d6c3bced0825d6/assets/punica-tui-demo.mp4
 
 ```bash
 python example/tui-multi-lora.py
