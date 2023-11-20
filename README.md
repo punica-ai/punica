@@ -7,7 +7,7 @@
 [punica-tui-demo.webm](https://github.com/punica-ai/punica/assets/2470081/532c6114-9322-4d53-ae88-1d0f44dc960f)
 
 ```bash
-python example/tui-multi-lora.py
+python examples/tui-multi-lora.py
 ```
 
 ## Overview
