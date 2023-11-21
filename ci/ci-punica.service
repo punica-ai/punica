@@ -20,5 +20,6 @@ ExecStart=/usr/bin/docker run --rm \
                               --env-file %h/.config/ci-punica.env \
                               -e RUNNER_NAME=%H \
                               -v /var/run/docker.sock:/var/run/docker.sock \
+                              -v /tmp/ci-punica:/tmp/ci-punica \
                               --name %N \
                               myoung34/github-runner:latest
