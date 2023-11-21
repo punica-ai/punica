@@ -1,7 +1,6 @@
 docker run --runtime=nvidia --gpus all --rm -t \
     -v $HOME/ci-test/cache:/ci-cache \
     -v $HOME/ci-test/punica-checkout:/app \
-    -e PUNICA_CI_CACHE_DIR=/ci-cache \
     -e PUNICA_CI_TORCH_VERSION=2.1.0 \
     -e PUNICA_CI_CUDA_MAJOR=12 \
     -e PUNICA_CI_CUDA_MINOR=1 \

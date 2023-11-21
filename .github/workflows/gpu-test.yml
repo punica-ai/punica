@@ -24,13 +24,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Run tests and collect coverage
         run: |
           docker run --runtime=nvidia --gpus all --rm -t \
               -v "$CI_RUNNER_CACHE_DIR":/ci-cache \
-              -v "$(pwd)":/app \
-              -e PUNICA_CI_CACHE_DIR=/ci-cache \
+              -v "$GITHUB_WORKSPACE":/app \
               -e PUNICA_CI_TORCH_VERSION=${{ matrix.torch }} \
               -e PUNICA_CI_CUDA_MAJOR=${{ matrix.cuda_major }} \
               -e PUNICA_CI_CUDA_MINOR=${{ matrix.cuda_minor }} \
