@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "coverage",
+    "pytest-cov",
     "yapf",
     "pytz",
     "tqdm",

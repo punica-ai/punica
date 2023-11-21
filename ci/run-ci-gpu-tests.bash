@@ -47,5 +47,5 @@ echo "::endgroup::"
 
 
 echo "::group::Punica pytest"
-coverage run -m pytest -v
+pytest --cov=punica
 echo "::endgroup::"

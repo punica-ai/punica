@@ -13,3 +13,4 @@ LLaMA-Factory/
 wandb/
 model/
 *.env
+.coverage
