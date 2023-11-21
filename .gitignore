@@ -12,3 +12,4 @@ dist/
 LLaMA-Factory/
 wandb/
 model/
+*.env
