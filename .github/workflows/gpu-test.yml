@@ -1,13 +1,17 @@
 name: Tests on GPU
 on:
   push:
-    paths:
-      - "!*.md"
+    paths-ignore:
+      - "*.md"
+      - "assets/**"
+      - "docs/**"
   pull_request:
-    paths:
-      - "!*.md"
-      - "!ci/**"
-      - "!.github/**"
+    paths-ignore:
+      - "*.md"
+      - "assets/**"
+      - "docs/**"
+      - "ci/**"
+      - ".github/**"
 jobs:
   gpu-test:
     strategy:
