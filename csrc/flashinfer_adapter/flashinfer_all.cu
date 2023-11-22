@@ -6,6 +6,10 @@
 #include "flashinfer/page.cuh"
 #include "flashinfer_config.h"
 
+using flashinfer::paged_kv_t;
+using flashinfer::PageStorage;
+using flashinfer::RotaryMode;
+
 template <typename T>
 void FlashInferBatchDecodeKernel(T* o, T* q, T* kv_data, int32_t* kv_indptr,
                                  int32_t* kv_indicies,
@@ -13,11 +17,11 @@ void FlashInferBatchDecodeKernel(T* o, T* q, T* kv_data, int32_t* kv_indptr,
                                  int num_layers, int layer_idx,
                                  int num_qo_heads, int num_kv_heads,
                                  int page_size, int batch_size) {
-  flashinfer::paged_kv_t<T, int32_t> paged_kv(
+  paged_kv_t<PageStorage::kIndices, T, int32_t> paged_kv(
       num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
-      kv_data, kv_indptr, kv_indicies, last_page_offset);
+      kv_data, kv_indicies, kv_indptr, last_page_offset);
   flashinfer::BatchDecodeWithPagedKVCache(q, paged_kv, o, nullptr, num_qo_heads,
-                                          flashinfer::RotaryMode::kLlama);
+                                          RotaryMode::kLlama);
 }
 
 template <int head_dim, typename T>
@@ -26,9 +30,9 @@ void FlashInferInitKvKernel(T* kv_data, int32_t* kv_indptr,
                             T* key, T* value, int32_t* seqlen_indptr,
                             int num_layers, int layer_idx, int num_kv_heads,
                             int page_size, int batch_size) {
-  flashinfer::paged_kv_t<T, int32_t> paged_kv(
+  paged_kv_t<PageStorage::kIndices, T, int32_t> paged_kv(
       num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
-      kv_data, kv_indptr, kv_indicies, last_page_offset);
+      kv_data, kv_indicies, kv_indptr, last_page_offset);
 
   constexpr size_t vec_size =
       std::max(16 / sizeof(T), static_cast<size_t>(head_dim / 32));
@@ -36,8 +40,8 @@ void FlashInferInitKvKernel(T* kv_data, int32_t* kv_indptr,
   constexpr size_t bdy = 128 / bdx;
   dim3 nblks(paged_kv.batch_size * paged_kv.num_heads / bdy);
   dim3 nthrs(bdx, bdy);
-  flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy, T,
-                                              int32_t>
+  flashinfer::AppendPagedKVCachePrefillKernel<head_dim, vec_size, bdx, bdy,
+                                              PageStorage::kIndices, T, int32_t>
       <<<nblks, nthrs>>>(paged_kv, key, value, seqlen_indptr);
 }
 
@@ -46,9 +50,9 @@ void FlashInferAppendKvKernel(T* kv_data, int32_t* kv_indptr,
                               int32_t* kv_indicies, int32_t* last_page_offset,
                               T* key, T* value, int num_layers, int layer_idx,
                               int num_kv_heads, int page_size, int batch_size) {
-  flashinfer::paged_kv_t<T, int32_t> paged_kv(
+  paged_kv_t<PageStorage::kIndices, T, int32_t> paged_kv(
       num_layers, layer_idx, num_kv_heads, page_size, head_dim, batch_size,
-      kv_data, kv_indptr, kv_indicies, last_page_offset);
+      kv_data, kv_indicies, kv_indptr, last_page_offset);
 
   constexpr size_t vec_size =
       std::max(16 / sizeof(T), static_cast<size_t>(head_dim / 32));
@@ -56,8 +60,8 @@ void FlashInferAppendKvKernel(T* kv_data, int32_t* kv_indptr,
   constexpr size_t bdy = 128 / bdx;
   dim3 nblks(paged_kv.batch_size * paged_kv.num_heads / bdy);
   dim3 nthrs(bdx, bdy);
-  flashinfer::AppendPagedKVCacheDecodeKernel<head_dim, vec_size, bdx, bdy, T,
-                                             int32_t>
+  flashinfer::AppendPagedKVCacheDecodeKernel<head_dim, vec_size, bdx, bdy,
+                                             PageStorage::kIndices, T, int32_t>
       <<<nblks, nthrs>>>(paged_kv, key, value);
 }
 
