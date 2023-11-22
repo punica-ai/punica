@@ -41,7 +41,7 @@ Read our paper to understand more: [Punica: Multi-Tenant LoRA Serving](https://a
 git clone https://github.com/punica-ai/punica.git
 cd punica
 git submodule sync
-git submodule update --init --recursive
+git submodule update --init
 
 pip install ninja torch
 pip install -v --no-build-isolation .

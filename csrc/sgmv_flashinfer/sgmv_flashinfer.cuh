@@ -1,10 +1,10 @@
 #pragma once
 #include <cooperative_groups.h>
 
-#include "cp_async.cuh"
-#include "mma.cuh"
-#include "permuted_smem.cuh"
-#include "vec_dtypes.cuh"
+#include "flashinfer/cp_async.cuh"
+#include "flashinfer/mma.cuh"
+#include "flashinfer/permuted_smem.cuh"
+#include "flashinfer/vec_dtypes.cuh"
 
 namespace flashinfer {
 

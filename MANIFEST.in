@@ -1,5 +1,6 @@
 recursive-include csrc *
 recursive-include third_party/cutlass/include *
+recursive-include third_party/flashinfer/include *
 prune benchmarks
 
 recursive-include licenses *

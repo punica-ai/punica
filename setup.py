@@ -44,7 +44,10 @@ ext_modules.append(
             "csrc/sgmv/sgmv_cutlass.cu",
             "csrc/sgmv_flashinfer/sgmv_all.cu",
         ],
-        include_dirs=[str(root.resolve() / "third_party/cutlass/include")],
+        include_dirs=[
+            str(root.resolve() / "third_party/cutlass/include"),
+            str(root.resolve() / "third_party/flashinfer/include"),
+        ],
     )
 )
 

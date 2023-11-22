@@ -4,3 +4,6 @@
 [submodule "third_party/cutlass"]
 	path = third_party/cutlass
 	url = https://github.com/NVIDIA/cutlass.git
+[submodule "third_party/flashinfer"]
+	path = third_party/flashinfer
+	url = https://github.com/flashinfer-ai/flashinfer.git

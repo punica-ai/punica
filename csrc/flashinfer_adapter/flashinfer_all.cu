@@ -2,8 +2,8 @@
 #include <cmath>
 #include <cstdint>
 
-#include "../flashinfer/decode.cuh"
-#include "../flashinfer/page.cuh"
+#include "flashinfer/decode.cuh"
+#include "flashinfer/page.cuh"
 #include "flashinfer_config.h"
 
 template <typename T>

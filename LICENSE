@@ -209,7 +209,7 @@ for text of these licenses.
 
 Apache-2.0
 * third_party/nvbench (with LLVM exception)
-* csrc/flashinfer
+* third_party/flashinfer
 
 BSD-3-Clause:
 * third_party/cutlass
