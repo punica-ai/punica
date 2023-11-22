@@ -1,0 +1,45 @@
+name: Tests on GPU
+on:
+  push:
+    paths-ignore:
+      - "*.md"
+      - "assets/**"
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "*.md"
+      - "assets/**"
+      - "docs/**"
+      - "ci/**"
+      - ".github/**"
+jobs:
+  gpu-test:
+    strategy:
+      matrix:
+        include:
+          - { arch: sm80, torch: "2.1.0", cuda_major: 12, cuda_minor: 1 }
+          - { arch: sm80, torch: "2.1.0", cuda_major: 11, cuda_minor: 8 }
+    runs-on: [self-hosted, "${{ matrix.arch }}"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Run tests and collect coverage
+        run: |
+          chown -R $CI_UID:$CI_GID "$GITHUB_WORKSPACE"
+          docker run --runtime=nvidia --gpus all --rm -t \
+              -v "$CI_RUNNER_CACHE_DIR":/ci-cache \
+              -v "$GITHUB_WORKSPACE":/app \
+              -e PUNICA_CI_TORCH_VERSION=${{ matrix.torch }} \
+              -e PUNICA_CI_CUDA_MAJOR=${{ matrix.cuda_major }} \
+              -e PUNICA_CI_CUDA_MINOR=${{ matrix.cuda_minor }} \
+              --user $CI_UID:$CI_GID \
+              nvidia/cuda:12.1.0-devel-ubuntu22.04 \
+              bash /app/ci/run-ci-gpu-tests.bash
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
