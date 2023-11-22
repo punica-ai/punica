@@ -16,10 +16,9 @@ jobs:
   gpu-test:
     strategy:
       matrix:
-        arch: [sm80]
         include:
-          - { torch: "2.1.0", cuda_major: 12, cuda_minor: 1 }
-          - { torch: "2.1.0", cuda_major: 11, cuda_minor: 8 }
+          - { arch: sm80, torch: "2.1.0", cuda_major: 12, cuda_minor: 1 }
+          - { arch: sm80, torch: "2.1.0", cuda_major: 11, cuda_minor: 8 }
     runs-on: [self-hosted, "${{ matrix.arch }}"]
     steps:
       - name: Checkout
@@ -42,3 +41,5 @@ jobs:
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
