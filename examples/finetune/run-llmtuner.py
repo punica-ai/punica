@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import sys
 
 sys.path.append("LLaMA-Factory/src")
@@ -13,4 +15,4 @@ register_template(
 )
 
 if __name__ == "__main__":
-  run_exp()
+    run_exp()
