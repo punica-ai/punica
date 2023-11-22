@@ -47,5 +47,5 @@ echo "::endgroup::"
 
 
 echo "::group::Punica pytest"
-pytest --cov=punica
+pytest --cov=punica --cov-report=xml
 echo "::endgroup::"
