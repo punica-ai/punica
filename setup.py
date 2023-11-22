@@ -49,7 +49,7 @@ ext_modules.append(
     ))
 
 setuptools.setup(
-    version=get_version(root / "punica/__init__.py"),
+    version=get_version(root / "src/punica/__init__.py"),
     ext_modules=ext_modules,
     cmdclass={"build_ext": torch_cpp_ext.BuildExtension},
 )

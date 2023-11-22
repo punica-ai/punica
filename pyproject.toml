@@ -28,23 +28,6 @@ dev = [
     "textual",
 ]
 
-[tool.setuptools.packages.find]
-include = ["punica*"]
-exclude = [
-    "assets",
-    "benchmarks",
-    "csrc",
-    "data",
-    "dist",
-    "examples",
-    "test",
-    "third_party",
-    "tmp",
-    "*__pycache__*",
-]
-namespaces = false
-
-
 [tool.yapf]
 based_on_style = "yapf"
 

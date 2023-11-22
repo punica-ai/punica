@@ -15,6 +15,7 @@ on:
 jobs:
   gpu-test:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { arch: sm80, torch: "2.1.0", cuda_major: 12, cuda_minor: 1 }
@@ -36,7 +37,7 @@ jobs:
               -e PUNICA_CI_CUDA_MAJOR=${{ matrix.cuda_major }} \
               -e PUNICA_CI_CUDA_MINOR=${{ matrix.cuda_minor }} \
               --user $CI_UID:$CI_GID \
-              nvidia/cuda:12.1.0-devel-ubuntu22.04 \
+              nvidia/cuda:${{ matrix.cuda_major }}.${{ matrix.cuda_minor }}.0-devel-ubuntu22.04 \
               bash /app/ci/run-ci-gpu-tests.bash
 
       - name: Upload coverage to Codecov

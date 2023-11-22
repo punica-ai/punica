@@ -41,11 +41,10 @@ echo "::endgroup::"
 echo "::group::Install Punica"
 cd "$PROJECT_ROOT"
 pip install ninja numpy
-# pip install -v --no-build-isolation .[dev]
-pip install -v -e .[dev]
+pip install -v --no-build-isolation -e .[dev]
 echo "::endgroup::"
 
 
 echo "::group::Punica pytest"
-pytest --cov=punica --cov-report=xml
+pytest --cov=src --cov-report=xml
 echo "::endgroup::"
