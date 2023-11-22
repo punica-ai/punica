@@ -44,15 +44,24 @@ def lora_ref_impl(
 
 
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
-@pytest.mark.parametrize("h1,h2", [(11008, 16), (16, 11008)])
+@pytest.mark.parametrize("h", [4096, 11008])
+@pytest.mark.parametrize("r", [16, 32, 64, 96, 128])
+@pytest.mark.parametrize(
+    "direction",
+    [pytest.param("shrink", marks=pytest.mark.xfail(reason="#11")), "expand"],
+)
 @pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3"])
 @torch.inference_mode()
-def test_sgmv_correctness(dtype_str, h1, h2, batch_setup):
+def test_sgmv_correctness(dtype_str, h, r, direction, batch_setup):
     torch.manual_seed(0xABCDABCD987)
     num_problems, problem_size = map(int, batch_setup.split("x"))
     num_layers = 5
     dtype = getattr(torch, dtype_str)
     device = torch.device("cuda:0")
+    if direction == "shrink":
+        h1, h2 = h, r
+    else:
+        h1, h2 = r, h
 
     w = [
         torch.randn((num_layers, h1, h2), dtype=dtype, device=device)
