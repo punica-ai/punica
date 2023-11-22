@@ -29,13 +29,14 @@ jobs:
 
       - name: Run tests and collect coverage
         run: |
+          chown -R $CI_UID:$CI_GID "$GITHUB_WORKSPACE"
           docker run --runtime=nvidia --gpus all --rm -t \
               -v "$CI_RUNNER_CACHE_DIR":/ci-cache \
               -v "$GITHUB_WORKSPACE":/app \
               -e PUNICA_CI_TORCH_VERSION=${{ matrix.torch }} \
               -e PUNICA_CI_CUDA_MAJOR=${{ matrix.cuda_major }} \
               -e PUNICA_CI_CUDA_MINOR=${{ matrix.cuda_minor }} \
-              --user $(id -u):$(id -g) \
+              --user $CI_UID:$CI_GID \
               nvidia/cuda:12.1.0-devel-ubuntu22.04 \
               bash /app/ci/run-ci-gpu-tests.bash
 

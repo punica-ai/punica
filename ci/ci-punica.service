@@ -19,8 +19,9 @@ ExecStartPre=-/usr/bin/docker pull myoung34/github-runner:latest
 ExecStart=/usr/bin/docker run --rm \
                               --env-file %h/.config/ci-punica.env \
                               -e RUNNER_NAME=%H \
+                              -e CI_UID=%U \
+                              -e CI_GID=%G \
                               -v /var/run/docker.sock:/var/run/docker.sock \
                               -v /tmp/ci-punica:/tmp/ci-punica \
-                              --user %U:%G \
                               --name %N \
                               myoung34/github-runner:latest
