@@ -3,6 +3,7 @@
 #include <torch/extension.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "bgmv/bgmv_config.h"
 #include "flashinfer_adapter/flashinfer_config.h"
@@ -43,7 +44,10 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 #define CHECK_SHAPE(a, b) check_shape(a, b, #a, #b)
 
 #define CHECK_EQ(a, b) \
-  TORCH_CHECK(a == b, "CHECK_EQ(" #a ", " #b ") failed. ", a, " vs ", b)
+  TORCH_CHECK((a) == (b), "CHECK_EQ(" #a ", " #b ") failed. ", a, " vs ", b)
+
+#define CHECK_GE(a, b) \
+  TORCH_CHECK((a) >= (b), "CHECK_GE(" #a ", " #b ") failed. ", a, " vs ", b)
 
 //====== dispatch pytorch dtype ======
 
@@ -71,82 +75,72 @@ inline constexpr uint32_t pack_u16(uint16_t a, uint16_t b) {
 
 //====== flashinfer ======
 
-void batch_decode(torch::Tensor o, torch::Tensor q, torch::Tensor kv_data,
-                  torch::Tensor kv_indptr, torch::Tensor kv_indicies,
-                  torch::Tensor last_page_offset, int layer_idx) {
+void batch_decode(torch::Tensor o, torch::Tensor q, torch::Tensor kv_ptrs,
+                  torch::Tensor kv_indptr, torch::Tensor last_page_offset,
+                  torch::Tensor kv_aux, int num_layers, int layer_idx,
+                  int num_kv_heads, int page_size) {
   CHECK_INPUT(o);
   CHECK_INPUT(q);
-  CHECK_INPUT(kv_data);
+  CHECK_INPUT(kv_ptrs);
   CHECK_INPUT(kv_indptr);
-  CHECK_INPUT(kv_indicies);
   CHECK_INPUT(last_page_offset);
 
   CHECK_DIM(3, o);                 // [B, N, D]
   CHECK_DIM(3, q);                 // [B, N, D]
-  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_ptrs);           // [kv_indptr[-1]] ptr to a  [L, 2, N, P, D]
   CHECK_DIM(1, kv_indptr);         // [B+1]
-  CHECK_DIM(1, kv_indicies);       // [None]
   CHECK_DIM(1, last_page_offset);  // [B]
 
-  int num_layers = static_cast<int>(kv_data.size(1));
-  int num_kv_heads = static_cast<int>(kv_data.size(3));
-  int page_size = static_cast<int>(kv_data.size(4));
-  int head_dim = static_cast<int>(kv_data.size(5));
   int batch_size = static_cast<int>(o.size(0));
   int num_qo_heads = static_cast<int>(o.size(1));
+  int head_dim = static_cast<int>(o.size(2));
   CHECK_SHAPE(o, q);
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
+  CHECK_GE(kv_aux.nbytes(), sizeof(int32_t) * (4 * batch_size + 1));
 
   bool ok = DISPATCH_TORCH_DTYPE(q.scalar_type(), [&] {
     FlashInferBatchDecodeKernel<c_type>(
         static_cast<c_type*>(o.data_ptr()), static_cast<c_type*>(q.data_ptr()),
-        static_cast<c_type*>(kv_data.data_ptr()), kv_indptr.data_ptr<int32_t>(),
-        kv_indicies.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
-        head_dim, num_layers, layer_idx, num_qo_heads, num_kv_heads, page_size,
-        batch_size);
+        reinterpret_cast<c_type**>(kv_ptrs.data_ptr<int64_t>()),
+        kv_indptr.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),
+        kv_aux.data_ptr(), head_dim, num_layers, layer_idx, num_qo_heads,
+        num_kv_heads, page_size, batch_size);
     return true;
   });
   TORCH_CHECK(ok, "No suitable kernel.", " dtype=", q.scalar_type(),
               " head_dim=", head_dim);
-
-#undef CASE
 }
 
-void init_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
-             torch::Tensor kv_indicies, torch::Tensor last_page_offset,
-             torch::Tensor k, torch::Tensor v, torch::Tensor seqlen_indptr,
-             int layer_idx) {
-  CHECK_INPUT(kv_data);
+void init_kv(torch::Tensor kv_ptrs, torch::Tensor kv_indptr,
+             torch::Tensor last_page_offset, torch::Tensor k, torch::Tensor v,
+             torch::Tensor seqlen_indptr, int num_layers, int layer_idx,
+             int num_kv_heads, int page_size) {
+  CHECK_INPUT(kv_ptrs);
   CHECK_INPUT(kv_indptr);
-  CHECK_INPUT(kv_indicies);
   CHECK_INPUT(last_page_offset);
   CHECK_INPUT(k);
   CHECK_INPUT(v);
   CHECK_INPUT(seqlen_indptr);
 
-  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_ptrs);           // [kv_indptr[-1]] ptr to a  [L, 2, N, P, D]
   CHECK_DIM(1, kv_indptr);         // [B+1]
-  CHECK_DIM(1, kv_indicies);       // [None]
   CHECK_DIM(1, last_page_offset);  // [B]
   CHECK_DIM(3, k);                 // [sum(seqlen_i), N, D]
   CHECK_DIM(3, v);                 // [sum(seqlen_i), N, D]
   CHECK_DIM(1, seqlen_indptr);     // [B+1]
 
-  int num_layers = static_cast<int>(kv_data.size(1));
-  int num_kv_heads = static_cast<int>(kv_data.size(3));
-  int page_size = static_cast<int>(kv_data.size(4));
-  int head_dim = static_cast<int>(kv_data.size(5));
+  int head_dim = static_cast<int>(k.size(2));
   int batch_size = static_cast<int>(last_page_offset.size(0));
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(seqlen_indptr.size(0), batch_size + 1);
+  CHECK_SHAPE(k, v);
 
 #define CASE(dim, _)                                                           \
   case dim:                                                                    \
     FlashInferInitKvKernel<dim, c_type>(                                       \
-        static_cast<c_type*>(kv_data.data_ptr()),                              \
-        kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(),        \
-        last_page_offset.data_ptr<int32_t>(),                                  \
+        reinterpret_cast<c_type**>(kv_ptrs.data_ptr<int64_t>()),               \
+        kv_indptr.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(),   \
         static_cast<c_type*>(k.data_ptr()),                                    \
         static_cast<c_type*>(v.data_ptr()), seqlen_indptr.data_ptr<int32_t>(), \
         num_layers, layer_idx, num_kv_heads, page_size, batch_size);           \
@@ -164,41 +158,35 @@ void init_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
 #undef CASE
 }
 
-void append_kv(torch::Tensor kv_data, torch::Tensor kv_indptr,
-               torch::Tensor kv_indicies, torch::Tensor last_page_offset,
-               torch::Tensor k, torch::Tensor v, int layer_idx) {
-  CHECK_INPUT(kv_data);
+void append_kv(torch::Tensor kv_ptrs, torch::Tensor kv_indptr,
+               torch::Tensor last_page_offset, torch::Tensor k, torch::Tensor v,
+               int num_layers, int layer_idx, int num_kv_heads, int page_size) {
+  CHECK_INPUT(kv_ptrs);
   CHECK_INPUT(kv_indptr);
-  CHECK_INPUT(kv_indicies);
   CHECK_INPUT(last_page_offset);
   CHECK_INPUT(k);
   CHECK_INPUT(v);
 
-  CHECK_DIM(6, kv_data);           // [None, L, 2, N, P, D]
+  CHECK_DIM(1, kv_ptrs);           // [kv_indptr[-1]] ptr to a  [L, 2, N, P, D]
   CHECK_DIM(1, kv_indptr);         // [B+1]
-  CHECK_DIM(1, kv_indicies);       // [None]
   CHECK_DIM(1, last_page_offset);  // [B]
   CHECK_DIM(3, k);                 // [B, N, D]
   CHECK_DIM(3, v);                 // [B, N, D]
 
-  int num_layers = static_cast<int>(kv_data.size(1));
-  int num_kv_heads = static_cast<int>(kv_data.size(3));
-  int page_size = static_cast<int>(kv_data.size(4));
-  int head_dim = static_cast<int>(kv_data.size(5));
+  int head_dim = static_cast<int>(k.size(2));
   int batch_size = static_cast<int>(k.size(0));
   CHECK_EQ(kv_indptr.size(0), batch_size + 1);
   CHECK_EQ(last_page_offset.size(0), batch_size);
   CHECK_SHAPE(k, v);
 
-#define CASE(dim, _)                                                    \
-  case dim:                                                             \
-    FlashInferAppendKvKernel<dim, c_type>(                              \
-        static_cast<c_type*>(kv_data.data_ptr()),                       \
-        kv_indptr.data_ptr<int32_t>(), kv_indicies.data_ptr<int32_t>(), \
-        last_page_offset.data_ptr<int32_t>(),                           \
-        static_cast<c_type*>(k.data_ptr()),                             \
-        static_cast<c_type*>(v.data_ptr()), num_layers, layer_idx,      \
-        num_kv_heads, page_size, batch_size);                           \
+#define CASE(dim, _)                                                         \
+  case dim:                                                                  \
+    FlashInferAppendKvKernel<dim, c_type>(                                   \
+        reinterpret_cast<c_type**>(kv_ptrs.data_ptr<int64_t>()),             \
+        kv_indptr.data_ptr<int32_t>(), last_page_offset.data_ptr<int32_t>(), \
+        static_cast<c_type*>(k.data_ptr()),                                  \
+        static_cast<c_type*>(v.data_ptr()), num_layers, layer_idx,           \
+        num_kv_heads, page_size, batch_size);                                \
     return true;
 
   bool ok = DISPATCH_TORCH_DTYPE(k.scalar_type(), [&] {

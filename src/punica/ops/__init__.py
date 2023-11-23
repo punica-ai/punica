@@ -3,6 +3,17 @@ import torch
 import punica.ops._kernels as _kernels
 from punica.utils.kvcache import BatchedKvCache
 
+_cache_buf = {}
+
+
+def _get_cache_buf(name: str, bytes: int, device: torch.device):
+    key = (name, device)
+    buf = _cache_buf.get(key)
+    if buf is None:
+        buf = torch.empty(bytes, dtype=torch.uint8, device=device)
+        _cache_buf[key] = buf
+    return buf
+
 
 def batch_decode(
     q: torch.Tensor,
@@ -10,27 +21,37 @@ def batch_decode(
     layer_idx: int,
 ) -> torch.Tensor:
     """
-  Perform self-attention with rotary position encoding
-  for each input in the batch.
+    Perform self-attention with rotary position encoding
+    for each input in the batch.
 
-  All inputs in the batch should be in the decode stage,
-  i.e., each input should only have one token.
+    All inputs in the batch should be in the decode stage,
+    i.e., each input should only have one token.
 
-  Both `q` and the `k` in `kv` should NOT be position encoded.
+    Both `q` and the `k` in `kv` should NOT be position encoded.
 
-  Args:
-    q: Shape: `[batch_size, num_heads, head_dim]`. \
-       Query projection (`X @ W_q`).
-    kv: Batched key-value cache.
-    layer_idx: Layer index of the KV cache.
+    Args:
+      q: Shape: `[batch_size, num_heads, head_dim]`. \
+        Query projection (`X @ W_q`).
+      kv: Batched key-value cache.
+      layer_idx: Layer index of the KV cache.
 
-  Returns:
-    Shape: `[batch_size, num_heads, head_dim]`. \
-    Output of the multi-head attention.
-  """
+    Returns:
+      Shape: `[batch_size, num_heads, head_dim]`. \
+      Output of the self-attention.
+    """
+    aux = _get_cache_buf("batch_decode_aux", 1 << 20, q.device)
     o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
     _kernels.batch_decode(
-        o, q, kv.data, kv.indptr, kv.indicies, kv.last_page_offset, layer_idx
+        o,
+        q,
+        kv.ptrs,
+        kv.indptr,
+        kv.last_page_offset,
+        aux,
+        kv.pool.num_layers,
+        layer_idx,
+        kv.pool.num_heads,
+        kv.pool.page_len,
     )
     return o
 
@@ -43,29 +64,30 @@ def init_kv(
     layer_idx: int,
 ):
     """
-  Copy `k` and `v` to the `kv` cache.
-  Pages of each sequence in the batch are already allocated in `kv`.
+    Copy `k` and `v` to the `kv` cache.
+    Pages of each sequence in the batch are already allocated in `kv`.
 
-  Args:
-    kv: Batched key-value cache.
-    k: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
-       Key projection. (`X @ W_k`)
-    v: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
-       Value projection. (`X @ W_v`)
-    seqlen_indptr: Shape: `[B + 1]`. Indptr of the sequence lengths. \
-      `seqlen_indptr[i + 1] == sum(seqlen[:i])`.
-    layer_idx: Layer index of the KV cache.
-  """
-    f = _kernels.init_kv
-    f(
-        kv.data,
+    Args:
+      kv: Batched key-value cache.
+      k: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+        Key projection. (`X @ W_k`)
+      v: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+        Value projection. (`X @ W_v`)
+      seqlen_indptr: Shape: `[B + 1]`. Indptr of the sequence lengths. \
+        `seqlen_indptr[i + 1] == sum(seqlen[:i])`.
+      layer_idx: Layer index of the KV cache.
+    """
+    _kernels.init_kv(
+        kv.ptrs,
         kv.indptr,
-        kv.indicies,
         kv.last_page_offset,
         k,
         v,
         seqlen_indptr,
+        kv.pool.num_layers,
         layer_idx,
+        kv.pool.num_heads,
+        kv.pool.page_len,
     )
 
 
@@ -76,20 +98,29 @@ def append_kv(
     layer_idx: int,
 ):
     """
-  Append the new token's `k` and `v` to the `kv` cache.
-  Page for the new token of each sequence in the batch
-  is already allocated in `kv`.
+    Append the new token's `k` and `v` to the `kv` cache.
+    Page for the new token of each sequence in the batch
+    is already allocated in `kv`.
 
-  Args:
-    kv: Batched key-value cache.
-    k: Shape: `[batch_size, num_heads, head_dim]`. \
-       Key projection. (`X @ W_k`)
-    v: Shape: `[batch_size, num_heads, head_dim]`. \
-       Value projection. (`X @ W_v`)
-    layer_idx: Layer index of the KV cache.
-  """
-    f = _kernels.append_kv
-    f(kv.data, kv.indptr, kv.indicies, kv.last_page_offset, k, v, layer_idx)
+    Args:
+      kv: Batched key-value cache.
+      k: Shape: `[batch_size, num_heads, head_dim]`. \
+        Key projection. (`X @ W_k`)
+      v: Shape: `[batch_size, num_heads, head_dim]`. \
+        Value projection. (`X @ W_v`)
+      layer_idx: Layer index of the KV cache.
+    """
+    _kernels.append_kv(
+        kv.ptrs,
+        kv.indptr,
+        kv.last_page_offset,
+        k,
+        v,
+        kv.pool.num_layers,
+        layer_idx,
+        kv.pool.num_heads,
+        kv.pool.page_len,
+    )
 
 
 def bgmv(
@@ -218,7 +249,7 @@ def add_lora_sgmv_custom_cutlass(
     x: torch.Tensor,
     wa_ptr: torch.Tensor,
     wb_ptr: torch.Tensor,
-    s: torch.IntTensor,
+    s: torch.Tensor,
     layer_idx: int,
     lora_rank: int,
 ):

@@ -87,6 +87,7 @@ class LlamaAttention(nn.Module):
         if len(blen.prefills) > 0:
             torch.cuda.nvtx.range_push("init_kv")
             assert prefill_kv is not None
+            assert blen.indptr is not None
             init_kv(
                 prefill_kv,
                 k_proj[: blen.doff].view(-1, self.num_kv_heads, self.head_dim),

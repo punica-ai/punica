@@ -26,7 +26,7 @@ class layer_lora_decode_Resources:
     def __init__(
         self,
         config: LlamaConfig,
-        block_len: int,
+        page_len: int,
         lora_rank: int,
         lora_popularity: int,
         seqlens: list[int],
@@ -39,8 +39,7 @@ class layer_lora_decode_Resources:
             num_layers=1,
             num_heads=num_heads,
             head_dim=head_dim,
-            capacity=sum((l + block_len - 1) // block_len for l in seqlens),
-            block_len=block_len,
+            page_len=page_len,
             dtype=dtype,
             device=device,
         )
@@ -77,7 +76,7 @@ def bench_layer_lora_decode(f):
     seqlen_ = list(reversed(range(2048, 0, -64)))
     dtype = torch.float16
     device = torch.device("cuda:0")
-    block_len = 16
+    page_len = 16
     lora_rank = 16
     head_dim = 128
 
@@ -105,7 +104,7 @@ def bench_layer_lora_decode(f):
         gc_torch()
         res = layer_lora_decode_Resources(
             config=config,
-            block_len=block_len,
+            page_len=page_len,
             lora_rank=lora_rank,
             lora_popularity=pop,
             seqlens=[seqlen] * batch_size,
@@ -116,7 +115,7 @@ def bench_layer_lora_decode(f):
             num_heads=num_heads,
             head_dim=head_dim,
             intermediate_size=intermediate_size,
-            block_len=block_len,
+            page_len=page_len,
             lora_rank=lora_rank,
             lora_popularity=pop,
             num_lora_models=res.num_lora_models,

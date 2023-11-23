@@ -95,8 +95,7 @@ def textgen_punica(
         num_layers=model_cfg.num_layers,
         num_heads=model_cfg.num_kv_heads,
         head_dim=model_cfg.hidden_size // model_cfg.num_qo_heads,
-        capacity=textgen_cfg.batch_size * 2048 // 16,
-        block_len=16,
+        page_len=16,
         dtype=dtype,
         device=device,
     )

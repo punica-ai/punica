@@ -149,8 +149,7 @@ class MultiLora:
             num_layers=model_config.num_hidden_layers,
             num_heads=model_config.num_attention_heads,
             head_dim=model_config.hidden_size // model_config.num_attention_heads,
-            capacity=self.maxlen * len(lora_specs) * 2 // 16,
-            block_len=16,
+            page_len=16,
             dtype=self.dtype,
             device=self.device,
         )

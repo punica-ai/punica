@@ -51,4 +51,8 @@ ignore = [
 "__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]
-addopts = "--ignore=third_party"
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["examples", "src", "tests"]
+exclude = ["examples/finetune"]

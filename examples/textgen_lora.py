@@ -107,8 +107,7 @@ def main():
         num_layers=model_config.num_hidden_layers,
         num_heads=model_config.num_attention_heads,
         head_dim=model_config.hidden_size // model_config.num_attention_heads,
-        capacity=4096 // 16,
-        block_len=16,
+        page_len=16,
         dtype=dtype,
         device=device,
     )
@@ -173,6 +172,7 @@ def main():
         print(text[last_print_len:], end="", flush=True)
         last_print_len = len(text)
 
+    kvcache.release()
     print()
 
 

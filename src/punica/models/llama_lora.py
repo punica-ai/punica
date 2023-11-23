@@ -221,6 +221,7 @@ class LlamaAttentionWithLora(nn.Module):
         if len(blen.prefills) > 0:
             torch.cuda.nvtx.range_push("init_kv")
             assert prefill_kv is not None
+            assert blen.indptr is not None
             init_kv(
                 prefill_kv,
                 k_proj[: blen.doff].view(-1, self.num_kv_heads, self.head_dim),
@@ -508,7 +509,7 @@ class LlamaForCausalLMWithLora(LlamaPreTrainedModel):
         prefill_kv: BatchedKvCache | None,
         decode_kv: BatchedKvCache | None,
         lora: BatchedLlamaLoraWeight,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         torch.cuda.nvtx.range_push("LlamaForCausalLMWithLora")
         hidden_states = self.model(input_ids, blen, prefill_kv, decode_kv, lora)
         torch.cuda.nvtx.range_push("lm_head")

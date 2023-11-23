@@ -19,7 +19,7 @@ class batch_decode_Resources:
         self,
         num_heads: int,
         head_dim: int,
-        block_len: int,
+        page_len: int,
         seqlens: list[int],
         dtype: str,
         device: torch.device,
@@ -29,8 +29,7 @@ class batch_decode_Resources:
             num_layers=1,
             num_heads=num_heads,
             head_dim=head_dim,
-            capacity=sum((l + block_len - 1) // block_len for l in seqlens),
-            block_len=block_len,
+            page_len=page_len,
             dtype=dtype,
             device=device,
         )
@@ -76,7 +75,7 @@ def bench_batch_decode(f):
     seqlen_ = list(reversed(range(2048, 0, -64)))
     dtype = "float16"
     device = torch.device("cuda:0")
-    block_len = 16
+    page_len = 16
     head_dim = 128
 
     all_ = list(itertools.product(num_heads_, seqlen_, batch_size_))
@@ -84,7 +83,7 @@ def bench_batch_decode(f):
         setup = dict(
             num_heads=num_heads,
             head_dim=head_dim,
-            block_len=block_len,
+            page_len=page_len,
             seqlen=seqlen,
             batch_size=batch_size,
         )
@@ -94,7 +93,7 @@ def bench_batch_decode(f):
         res = batch_decode_Resources(
             num_heads=num_heads,
             head_dim=head_dim,
-            block_len=block_len,
+            page_len=page_len,
             seqlens=[seqlen] * batch_size,
             dtype=dtype,
             device=device,

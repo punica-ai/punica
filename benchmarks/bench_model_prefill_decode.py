@@ -19,7 +19,7 @@ class model_Resources:
     def __init__(
         self,
         config: LlamaConfig,
-        block_len: int,
+        page_len: int,
         seqlen: int,
         prefills: int,
         decodes: int,
@@ -32,8 +32,7 @@ class model_Resources:
             num_layers=config.num_hidden_layers,
             num_heads=num_heads,
             head_dim=head_dim,
-            capacity=(seqlen + block_len - 1) // block_len * (prefills + decodes),
-            block_len=block_len,
+            page_len=page_len,
             dtype=dtype,
             device=device,
         )
@@ -63,7 +62,7 @@ def bench_model_prefill_decode(f):
     seqlen_ = [128, 512, 1024, 1536, 2048]
     dtype = torch.float16
     device = torch.device("cuda:0")
-    block_len = 16
+    page_len = 16
     head_dim = 128
 
     all_ = list(
@@ -99,7 +98,7 @@ def bench_model_prefill_decode(f):
         gc_torch()
         res = model_Resources(
             config=config,
-            block_len=block_len,
+            page_len=page_len,
             seqlen=seqlen,
             prefills=batch_size * prefill,
             decodes=batch_size * decode,
@@ -111,7 +110,7 @@ def bench_model_prefill_decode(f):
             head_dim=head_dim,
             num_layers=num_layers,
             intermediate_size=intermediate_size,
-            block_len=block_len,
+            page_len=page_len,
             seqlen=seqlen,
             prefills=batch_size * prefill,
             decodes=batch_size * decode,
