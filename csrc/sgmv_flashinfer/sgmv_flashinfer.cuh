@@ -69,7 +69,7 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp,
             offset += 8;
           }
           row_idx += 8;
-          y_ptr += 8 * d_out;
+          y_ptr += 8 * d_out - 2 * num_blocks_n * cell_capacity<T>();
           offset += 8 * num_cells_n - 4 * num_blocks_n;
         }
       }
@@ -329,7 +329,7 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp,
             offset += 8;
           }
           row_idx += 8;
-          y_ptr += 8 * d_out;
+          y_ptr += 8 * d_out - 2 * num_blocks_n * cell_capacity<T>();
           offset += 8 * num_cells_n - 4 * num_blocks_n;
         }
       }
