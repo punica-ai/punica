@@ -53,7 +53,7 @@ def lora_ref_impl(
         pytest.param("expand", marks=pytest.mark.xfail(reason="TODO: sgmv expand")),
     ],
 )
-@pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3"])
+@pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3", "32x1", "1x32"])
 @torch.inference_mode()
 def test_sgmv_correctness(dtype_str, h, r, direction, batch_setup):
     torch.manual_seed(0xABCDABCD987)
@@ -88,7 +88,7 @@ def test_sgmv_correctness(dtype_str, h, r, direction, batch_setup):
 
 @pytest.mark.xfail(reason="TODO: sgmv expand")
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
-@pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3"])
+@pytest.mark.parametrize("batch_setup", ["1x7", "7x1", "3x3", "32x1", "1x32"])
 @torch.inference_mode()
 def test_lora_correctness(dtype_str, batch_setup):
     torch.manual_seed(0xABCDABCD987)
