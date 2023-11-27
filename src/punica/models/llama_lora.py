@@ -9,37 +9,13 @@ from transformers.models.llama.modeling_llama import (
     ACT2FN,
     LlamaConfig,
     PreTrainedModel,
-    rotate_half,
 )
 
 from punica.ops import (
     add_lora_sgmv_custom_cutlass as add_lora,
 )
-from punica.ops import (
-    append_kv,
-    batch_decode,
-    init_kv,
-    rms_norm,
-)
+from punica.ops import append_kv, batch_decode, batch_prefill, init_kv, rms_norm
 from punica.utils import BatchedKvCache, BatchedLoraWeight, BatchLenInfo, LoraWeight
-
-
-def rotary_pos_emb(q, k, beg):
-    device = q.device
-    dtype = q.dtype
-    bsz, nhead, seqlen, dim = q.shape
-    end = beg + seqlen
-
-    base = 10000
-    inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
-    t = torch.arange(beg, end, device=device, dtype=dtype)
-    freqs = torch.einsum("i,j->ij", t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1).unsqueeze(0).unsqueeze(0)
-    cos = emb.cos()
-    sin = emb.sin()
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed.to(q.dtype), k_embed.to(k.dtype)
 
 
 class LlamaLoraWeight:
@@ -136,15 +112,6 @@ class BatchedLlamaLoraWeight:
         self.rank = weights[0].q.lora_rank
 
 
-def repeat_kv(t: torch.Tensor, repeat: int) -> torch.Tensor:
-    if repeat == 1:
-        return t
-    num_kv_heads, seqlen, head_dim = t.shape
-    t = t[:, None, :, :].expand(num_kv_heads, repeat, seqlen, head_dim)
-    t = t.reshape(num_kv_heads * repeat, seqlen, head_dim)
-    return t
-
-
 class LlamaAttentionWithLora(nn.Module):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
@@ -219,65 +186,21 @@ class LlamaAttentionWithLora(nn.Module):
         stack_attn_output = []
 
         if len(blen.prefills) > 0:
-            torch.cuda.nvtx.range_push("init_kv")
             assert prefill_kv is not None
             assert blen.indptr is not None
-            init_kv(
-                prefill_kv,
-                k_proj[: blen.doff].view(-1, self.num_kv_heads, self.head_dim),
-                v_proj[: blen.doff].view(-1, self.num_kv_heads, self.head_dim),
-                blen.indptr,
-                self.layer_idx,
-            )
+            q = q_proj[: blen.doff].view(blen.doff, self.num_qo_heads, self.head_dim)
+            k = k_proj[: blen.doff].view(blen.doff, self.num_kv_heads, self.head_dim)
+            v = v_proj[: blen.doff].view(blen.doff, self.num_kv_heads, self.head_dim)
+
+            torch.cuda.nvtx.range_push("init_kv")
+            init_kv(prefill_kv, k, v, blen.indptr, self.layer_idx)
             torch.cuda.nvtx.range_pop()
 
-            q_projs = q_proj[: blen.doff].split(blen.prefills)
-            k_projs = k_proj[: blen.doff].split(blen.prefills)
-            v_projs = v_proj[: blen.doff].split(blen.prefills)
-            for batch_idx, q_len in enumerate(blen.prefills):
-                torch.cuda.nvtx.range_push(f"batch_idx={batch_idx}")
-                torch.cuda.nvtx.range_push("transpose")
-                query_states = (
-                    q_projs[batch_idx]
-                    .view(1, q_len, self.num_qo_heads, self.head_dim)
-                    .transpose(1, 2)
-                )
-                key_states = (
-                    k_projs[batch_idx]
-                    .view(1, q_len, self.num_kv_heads, self.head_dim)
-                    .transpose(1, 2)
-                )
-                value_states = (
-                    v_projs[batch_idx]
-                    .view(1, q_len, self.num_kv_heads, self.head_dim)
-                    .transpose(1, 2)
-                )
-                # (1, n, s, d)
-                torch.cuda.nvtx.range_pop()
-
-                torch.cuda.nvtx.range_push("pos_emb")
-                query_states, key_states = rotary_pos_emb(query_states, key_states, 0)
-                torch.cuda.nvtx.range_pop()
-
-                query_states = query_states.squeeze(0)
-                key_states = key_states.squeeze(0)
-                value_states = value_states.squeeze(0)
-                # (n, s, d)
-
-                # GQA
-                key_states = repeat_kv(key_states, self.num_kv_groups)
-                value_states = repeat_kv(value_states, self.num_kv_groups)
-
-                # scaled dot product attention
-                torch.cuda.nvtx.range_push("sdpa")
-                attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    query_states, key_states, value_states, is_causal=True
-                )
-                attn_output = attn_output.transpose(0, 1)
-                attn_output = attn_output.reshape(q_len, self.hidden_size)
-                stack_attn_output.append(attn_output)
-                torch.cuda.nvtx.range_pop()
-                torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("batch_prefill")
+            attn_output = batch_prefill(q, blen.indptr, prefill_kv, self.layer_idx)
+            attn_output = attn_output.view(blen.doff, self.hidden_size)
+            stack_attn_output.append(attn_output)
+            torch.cuda.nvtx.range_pop()
 
         if blen.decode > 0:
             q = q_proj[blen.doff :].view(blen.decode, self.num_qo_heads, self.head_dim)

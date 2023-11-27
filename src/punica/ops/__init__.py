@@ -15,6 +15,46 @@ def _get_cache_buf(name: str, bytes: int, device: torch.device):
     return buf
 
 
+def batch_prefill(
+    q: torch.Tensor,
+    qo_indptr: torch.Tensor,
+    kv: BatchedKvCache,
+    layer_idx: int,
+) -> torch.Tensor:
+    """
+    Perform self-attention with rotary position encoding
+    for each input in the batch.
+    `q` and `kv` should have same length.
+    Both `q` and the `k` in `kv` should NOT be position encoded.
+
+    Args:
+      q: Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+        Query projection (`X @ W_q`).
+      kv: Batched key-value cache.
+      layer_idx: Layer index of the KV cache.
+
+    Returns:
+      Shape: `[sum(seqlen[i]), num_heads, head_dim]`. \
+      Output of the self-attention.
+    """
+    tmp = _get_cache_buf("flashinfer_tmp", 64 << 20, q.device)
+    o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
+    _kernels.batch_prefill(
+        o,
+        q,
+        qo_indptr,
+        kv.ptrs,
+        kv.indptr,
+        kv.last_page_offset,
+        tmp,
+        kv.pool.num_layers,
+        layer_idx,
+        kv.pool.num_heads,
+        kv.pool.page_len,
+    )
+    return o
+
+
 def batch_decode(
     q: torch.Tensor,
     kv: BatchedKvCache,
@@ -39,7 +79,7 @@ def batch_decode(
       Shape: `[batch_size, num_heads, head_dim]`. \
       Output of the self-attention.
     """
-    aux = _get_cache_buf("batch_decode_aux", 1 << 20, q.device)
+    tmp = _get_cache_buf("flashinfer_tmp", 64 << 20, q.device)
     o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
     _kernels.batch_decode(
         o,
@@ -47,7 +87,7 @@ def batch_decode(
         kv.ptrs,
         kv.indptr,
         kv.last_page_offset,
-        aux,
+        tmp,
         kv.pool.num_layers,
         layer_idx,
         kv.pool.num_heads,

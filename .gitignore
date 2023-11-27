@@ -1,3 +1,4 @@
+csrc/flashinfer_adapter/generated/
 data/
 build/
 tmp/

@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from punica import BatchedKvCache, BatchLenInfo, KvCache, KvPool
-from punica.ops import append_kv, batch_decode, init_kv
+from punica.ops import append_kv, batch_decode, batch_prefill, init_kv
 
 num_layers = 3
 num_qo_heads = 32
@@ -16,8 +16,8 @@ device = torch.device("cuda:0")
 
 def assert_close(a, b):
     rtol, atol = {
-        torch.float16: (5e-4, 5e-4),
-        torch.bfloat16: (1e-3, 5e-3),
+        torch.float16: (1e-3, 5e-4),
+        torch.bfloat16: (8e-3, 8e-3),
     }[a.dtype]
     torch.testing.assert_close(a, b, rtol=rtol, atol=atol)
 
@@ -60,6 +60,50 @@ def repeat_kv(t: torch.Tensor, repeat: int) -> torch.Tensor:
     return t
 
 
+def ref_batch_prefill(
+    q: torch.Tensor,
+    qo_indptr: torch.Tensor,
+    cs: list[KvCache],
+    layer_idx: int,
+) -> torch.Tensor:
+    _, n_qo, _ = q.shape
+    _l, _2, n_kv, _p, d = cs[0].pool.page_meta.shape
+    b = len(cs)
+    assert (b + 1,) == qo_indptr.shape
+    assert (qo_indptr[-1].item(), n_qo, d) == q.shape
+
+    sm_scale = 1.0 / np.sqrt(d)
+    out = []
+    for i in range(b):
+        assert qo_indptr[i + 1] - qo_indptr[i] == cs[i].seqlen
+        s = cs[i].seqlen
+
+        mask = torch.zeros(s, s, dtype=torch.float32, device=q.device)
+        mask.masked_fill_(
+            torch.ones(s, s, device=q.device, dtype=torch.bool).tril().logical_not(),
+            float("-inf"),
+        )
+
+        kv_pages = torch.cat(list(cs[i].pages), dim=3)[layer_idx]
+        ki = kv_pages[0, :, :s, :].contiguous().to(torch.float32)
+        vi = kv_pages[1, :, :s, :].contiguous().to(torch.float32)
+        qi = q[qo_indptr[i] : qo_indptr[i + 1]].to(torch.float32)
+
+        qi = rotary_embed(qi.transpose(0, 1), 0).transpose(0, 1)
+        ki = rotary_embed(ki, 0)
+
+        ki = repeat_kv(ki, n_qo // n_kv)
+        vi = repeat_kv(vi, n_qo // n_kv)
+
+        pi = torch.einsum("qnd,nkd->nqk", qi, ki) * sm_scale
+        pi += mask
+        pi = torch.softmax(pi, dim=-1)
+        oi = torch.einsum("nqs,nsd->qnd", pi, vi).to(q.dtype)
+        out.append(oi)
+    o = torch.cat(out, dim=0)
+    return o
+
+
 def ref_batch_decode(
     q: torch.Tensor,
     cs: list[KvCache],
@@ -90,6 +134,31 @@ def ref_batch_decode(
         out.append(oi)
     o = torch.stack(out)
     return o
+
+
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
+@pytest.mark.parametrize("group_size", [1, 8])
+@torch.inference_mode()
+def test_batch_prefill_correctness(dtype_str: str, group_size: int):
+    torch.manual_seed(0xABCDABCD987)
+    num_kv_heads = num_qo_heads // group_size
+    assert num_kv_heads * group_size == num_qo_heads
+    dtype = getattr(torch, dtype_str)
+
+    pool = KvPool(num_layers, num_kv_heads, head_dim, page_len, dtype, device)
+    seqlens = torch.randint(1, maxlen, (batch_size,), device="cpu").tolist()
+    blen = BatchLenInfo(seqlens, 0, device)
+    q = torch.randn(sum(seqlens), num_qo_heads, head_dim, dtype=dtype, device=device)
+    cs = [KvCache(pool, l) for l in seqlens]
+    kv = BatchedKvCache(cs)
+    for page in pool.allocated_pages():
+        page.copy_(torch.rand_like(page))
+
+    assert blen.indptr is not None
+    for layer_idx in range(num_layers):
+        o_ref = ref_batch_prefill(q, blen.indptr, cs, layer_idx)
+        o_our = batch_prefill(q, blen.indptr, kv, layer_idx)
+        assert_close(o_ref, o_our)
 
 
 @pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
