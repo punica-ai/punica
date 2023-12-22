@@ -1,4 +1,5 @@
 csrc/flashinfer_adapter/generated/
+src/punica/_build_meta.py
 data/
 build/
 tmp/
