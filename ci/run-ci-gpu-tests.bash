@@ -28,7 +28,7 @@ fi
 bash "/ci-cache/Miniforge3.sh" -b -p "$HOME/conda"
 source "$HOME/conda/etc/profile.d/conda.sh"
 source "$HOME/conda/etc/profile.d/mamba.sh"
-mamba create -y -n punica-ci python=3.10.13
+mamba create -y -n punica-ci python=3.10.13 git
 mamba activate punica-ci
 echo "::endgroup::"
 
