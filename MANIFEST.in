@@ -1,3 +1,5 @@
+include version.txt
+include src/punica/_build_meta.py
 recursive-include csrc *
 recursive-include third_party/cutlass/include *
 recursive-include third_party/flashinfer/include *
