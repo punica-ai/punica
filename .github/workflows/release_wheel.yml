@@ -80,7 +80,7 @@ jobs:
             with open(path, "rb") as f:
               sha256 = hashlib.sha256(f.read()).hexdigest()
             ver, cu = re.findall(r"punica-([0-9.]+)\+cu(\d+)-", path.name)[0]
-            with open(f"punica-whl/cu{cu}/index.html", "a") as f:
+            with open(f"punica-whl/cu{cu}/punica/index.html", "a") as f:
               f.write(f'<a href="https://github.com/punica-ai/punica/releases/download/v{ver}/{path.name}#sha256={sha256}">{path.name}</a><br>\n')
 
       - name: Push wheel index

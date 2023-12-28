@@ -1,10 +1,14 @@
+# sdist & wheel
 include version.txt
-include src/punica/_build_meta.py
+recursive-include licenses *
 recursive-include csrc *
 recursive-include third_party/cutlass/include *
 recursive-include third_party/flashinfer/include *
-prune benchmarks
 
-recursive-include licenses *
+# wheel-only
+exclude src/punica/_build_meta.py
+
+# Unneeded files
+prune benchmarks
 prune */__pycache__
 global-exclude *.so

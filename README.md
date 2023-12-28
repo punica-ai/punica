@@ -35,15 +35,41 @@ The following figure shows the text generation throughput comparison between Pun
 Read our paper to understand more: [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547).
 
 
-## Install
+## Installation
+
+You can install Punica from binary package or build from source.
+
+### Install from binary package
+
+* Pros: No need to compile. Fast to install.
+* Cons: Might not match your CUDA version, CUDA architecture, PyTorch version, or Python version.
+* Current precompiled versions:
+  * CUDA: 11.8, 12.1
+  * Python: 3.10, 3.11
+  * TORCH_CUDA_ARCH_LIST: `8.0 8.6 8.9+PTX`
 
 ```bash
+pip install ninja torch
+pip install punica -i https://punica-ai.github.io/whl/cu121/ --extra-index-url https://pypi.org/simple
+# Note: Change cu121 to your CUDA version.
+```
+
+### Build from source
+
+```bash
+# Please install torch before punica
+pip install ninja numpy torch
+
+# Clone punica
 git clone https://github.com/punica-ai/punica.git
 cd punica
 git submodule sync
 git submodule update --init
 
-pip install ninja torch
+# If you encouter problem while compilation, set TORCH_CUDA_ARCH_LIST to your CUDA architecture.
+# export TORCH_CUDA_ARCH_LIST="8.0"
+
+# Build and install punica
 pip install -v --no-build-isolation .
 ```
 

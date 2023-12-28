@@ -28,6 +28,13 @@ dev = [
     "textual",
 ]
 
+# Include different sets of files for sdist and wheel
+# see: https://stackoverflow.com/a/54953494/1332817
+[tool.setuptools.package-data]  # wheel-only files
+punica = ["src/punica/_build_meta.py"]
+[tool.setuptools.exclude-package-data]  # exclude from wheel
+punica = ["csrc", "third_party"]
+
 [tool.ruff]
 exclude = ["third_party", "src/punica/_build_meta.py"]
 
