@@ -17,9 +17,12 @@ jobs:
         id: release
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
 
   wheel:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
     uses: ./.github/workflows/release_wheel.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
     secrets: inherit
