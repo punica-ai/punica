@@ -1,19 +1,19 @@
 name: Tests on GPU
 on:
   push:
-    paths-ignore:
-      - "*.md"
-      - "assets/**"
-      - "docs/**"
+    paths:
+      - "*.py"
+      - "csrc/**"
+      - "src/**"
+      - "tests/**"
     branches-ignore:
       - ci-wheel
   pull_request:
-    paths-ignore:
-      - "*.md"
-      - "assets/**"
-      - "docs/**"
-      - "ci/**"
-      - ".github/**"
+    paths:
+      - "*.py"
+      - "csrc/**"
+      - "src/**"
+      - "tests/**"
 jobs:
   gpu-test:
     strategy:
