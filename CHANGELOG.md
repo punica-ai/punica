@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/punica-ai/punica/compare/v1.0.2...v1.0.3) (2023-12-28)
+
+
+### Bug Fixes
+
+* **release-please:** provide tag_name ([4cd735b](https://github.com/punica-ai/punica/commit/4cd735b747dbc113e26d4b9ede5f2bfaa06db5f0))
+
 ## [1.0.2](https://github.com/punica-ai/punica/compare/v1.0.1...v1.0.2) (2023-12-28)
 
 
