@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/punica-ai/punica/compare/v1.0.0...v1.0.1) (2023-12-28)
+
+
+### Bug Fixes
+
+* **release-please:** allow triggering release_wheel gh action ([54f3d38](https://github.com/punica-ai/punica/commit/54f3d38e57d71503683eb275b989da63ba02e1bd))
+
 ## [1.0.0](https://github.com/punica-ai/punica/compare/v0.3.1...v1.0.0) (2023-12-28)
 
 
