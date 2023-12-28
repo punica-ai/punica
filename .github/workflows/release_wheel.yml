@@ -1,10 +1,11 @@
 name: Release
 on:
-  push:
-    branches:
-      - ci-wheel
-    tags:
-      - "v[0-9]+*"
+  workflow_call:
+    secrets:
+      WHL_TOKEN:
+        required: true
+      PYPI_TEST_TOKEN:
+        required: true
 
 env:
   TORCH_CUDA_ARCH_LIST: "8.0 8.6 8.9+PTX"  # Need fix for 9.0
@@ -60,7 +61,6 @@ jobs:
 
       - uses: softprops/action-gh-release@v1
         with:
-          draft: true
           files: |
             dist/punica-*.whl
             dist/punica-*.tar.gz

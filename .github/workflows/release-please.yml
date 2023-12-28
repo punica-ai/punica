@@ -14,5 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/release-please-action@v4
-        with:
-          token: ${{ secrets.PAT_PUNICA_REPO_CI }}
+      - if: ${{ steps.release.outputs.release_created }}
+        uses: ./.github/workflows/release_wheel.yml
+        secrets: inherit
