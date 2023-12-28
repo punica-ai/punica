@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/punica-ai/punica/compare/v1.0.1...v1.0.2) (2023-12-28)
+
+
+### Bug Fixes
+
+* **release-please:** trigger release_wheel when release is created ([3b980a1](https://github.com/punica-ai/punica/commit/3b980a1baa4ca24f75da39b9b7d0cfcd8b859470))
+
 ## [1.0.1](https://github.com/punica-ai/punica/compare/v1.0.0...v1.0.1) (2023-12-28)
 
 
