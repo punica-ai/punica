@@ -20,10 +20,10 @@ export XDG_CACHE_HOME=/ci-cache/xdg-cache
 mkdir -p "$CONDA_pkgs_dirs" "$XDG_CACHE_HOME"
 export HOME=/tmp/home
 mkdir -p $HOME
+export PATH="$HOME/.local/bin:$PATH"
 CUDA_MAJOR="${PUNICA_CI_CUDA_VERSION%.*}"
 CUDA_MINOR="${PUNICA_CI_CUDA_VERSION#*.}"
 PYVER="${PUNICA_CI_PYTHON_VERSION//./}"
-export PATH="$HOME/.local/bin:$PATH"
 export PATH="/opt/python/cp${PYVER}-cp${PYVER}/bin:$PATH"
 
 
@@ -39,5 +39,7 @@ echo "::endgroup::"
 
 echo "::group::Build wheel for Punica"
 cd "$PROJECT_ROOT"
-python -m build --no-isolation
+PUNICA_BUILD_VERSION="${PUNICA_BUILD_VERSION}+cu${CUDA_MAJOR}${CUDA_MINOR}" python -m build --no-isolation
+rm -f dist/*.tar.gz
+python -m build --no-isolation --sdist
 echo "::endgroup::"

@@ -5,6 +5,8 @@ on:
       - "*.md"
       - "assets/**"
       - "docs/**"
+    branches-ignore:
+      - ci-wheel
   pull_request:
     paths-ignore:
       - "*.md"
