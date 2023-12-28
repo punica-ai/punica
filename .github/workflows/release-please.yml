@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/release-please-action@v4
-      - if: ${{ steps.release.outputs.release_created }}
-        uses: ./.github/workflows/release_wheel.yml
-        secrets: inherit
+        id: release
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+
+  wheel:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/release_wheel.yml
+    secrets: inherit
