@@ -232,7 +232,7 @@ def sgmv_cutlass(
     y: torch.Tensor,
     x: torch.Tensor,
     w_ptr: torch.Tensor,
-    s: torch.IntTensor,
+    s: torch.Tensor,
     layer_idx: int,
 ):
     """
@@ -258,7 +258,7 @@ def add_lora_sgmv_cutlass(
     x: torch.Tensor,
     wa_ptr: torch.Tensor,
     wb_ptr: torch.Tensor,
-    s: torch.IntTensor,
+    s: torch.Tensor,
     layer_idx: int,
     lora_rank: int,
 ):
@@ -320,7 +320,7 @@ def sgmv(
     y: torch.Tensor,
     x: torch.Tensor,
     w_ptr: torch.Tensor,
-    s: torch.IntTensor,
+    s: torch.Tensor,
     layer_idx: int,
 ):
     if x.size(1) < y.size(1):
@@ -334,7 +334,7 @@ def add_lora_sgmv(
     x: torch.Tensor,
     wa_ptr: torch.Tensor,
     wb_ptr: torch.Tensor,
-    s: torch.IntTensor,
+    s: torch.Tensor,
     layer_idx: int,
     lora_rank: int,
 ):

@@ -41,6 +41,7 @@ void bench_sgmv(nvbench::state &state) {
   int d_out = state.get_int64("d_out");
   int num_loras = 100;
   int num_layers = 3;
+  cudaStream_t stream = nullptr;
   std::mt19937 gen(0xabcdabcd987);
   std::normal_distribution<float> dis;
 
@@ -114,7 +115,7 @@ void bench_sgmv(nvbench::state &state) {
          thrust::raw_pointer_cast(x_d.data()),
          thrust::raw_pointer_cast(w_d.data()),
          thrust::raw_pointer_cast(s_d.data()), tmp_d.get(), num_problems, d_in,
-         d_out, layer_idx);
+         d_out, layer_idx, stream);
 
     // copy thrust device_vector y_d to std vector y_h
     thrust::host_vector<half> y_h = y_d;
@@ -146,7 +147,7 @@ void bench_sgmv(nvbench::state &state) {
          thrust::raw_pointer_cast(x_d.data()),
          (half **)thrust::raw_pointer_cast(w_d.data()),
          thrust::raw_pointer_cast(s_d.data()), tmp_d.get(), num_problems, d_in,
-         d_out, layer_idx);
+         d_out, layer_idx, stream);
   });
 }
 

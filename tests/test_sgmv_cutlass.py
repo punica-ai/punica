@@ -120,3 +120,47 @@ def test_lora_correctness(dtype_str, batch_setup):
         y_our = y.clone()
         punica.ops.add_lora_sgmv_cutlass(y_our, x, wa_ptr, wb_ptr, s, layer_idx, r)
         assert_close(y_ref, y_our)
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [pytest.param("shrink", marks=pytest.mark.xfail(reason="#11")), "expand"],
+)
+@torch.inference_mode()
+def test_sgmv_cuda_graph(direction):
+    torch.manual_seed(0xABCDABCD987)
+    num_problems, problem_size = 13, 5
+    num_layers = 5
+    dtype = torch.float16
+    device = torch.device("cuda:0")
+    h, r = 11008, 16
+    if direction == "shrink":
+        h1, h2 = h, r
+    else:
+        h1, h2 = r, h
+
+    w = [
+        torch.randn((num_layers, h1, h2), dtype=dtype, device=device)
+        for _ in range(num_problems)
+    ]
+    w_ptr = torch.tensor([t.data_ptr() for t in w], dtype=torch.int64, device=device)
+    s = torch.cumsum(
+        torch.tensor([0] + [problem_size] * num_problems, device=device),
+        dim=0,
+        dtype=torch.int32,
+    )
+    x = torch.randn((s[-1], h1), dtype=dtype, device=device)
+    y = torch.randn((s[-1], h2), dtype=dtype, device=device)
+    for layer_idx in range(num_layers):
+        y_our = y.clone()
+        punica.ops.sgmv_cutlass(y_our, x, w_ptr, s, layer_idx)
+
+        y_graph = torch.empty_like(y)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            punica.ops.sgmv_cutlass(y_graph, x, w_ptr, s, layer_idx)
+
+        for _ in range(2):
+            y_graph.copy_(y.clone())
+            graph.replay()
+            assert (y_graph == y_our).all()
