@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/punica-ai/punica/compare/v1.0.3...v1.1.0) (2023-12-30)
+
+
+### Features
+
+* **cuda-graph:** use pytorch current stream for sgmv ([b5f5e1a](https://github.com/punica-ai/punica/commit/b5f5e1a3aa46702c843e8815acf8f654a242e109))
+
+
+### Bug Fixes
+
+* **cuda-graph:** specify stream for precompute_sgmv_args in sgmv_cutlass ([07a40b9](https://github.com/punica-ai/punica/commit/07a40b9d30e98d88963e8a7e140120a25ac0d518))
+
 ## [1.0.3](https://github.com/punica-ai/punica/compare/v1.0.2...v1.0.3) (2023-12-28)
 
 
