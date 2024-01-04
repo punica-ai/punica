@@ -342,7 +342,7 @@ __global__ void sgmv_shrink(T* y, T* x, T** w, IdType* s, float* tmp,
   if constexpr (cooperative) {
     uint32_t max_segment_size = 0;
     for (uint32_t i = 0; i < num_problems; ++i) {
-      max_segment_size = max(max_segment_size, s_ends[i] - s_starts[i]);
+      max_segment_size = max(max_segment_size, s[i + 1] - s[i]);
     }
 
     const uint32_t max_steps = (max_segment_size + (num_warps * 16 - 1)) / (num_warps * 16);
