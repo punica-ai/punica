@@ -51,6 +51,12 @@ def get_lora_lens(bs: int, popularity: str) -> list[int]:
             a *= alpha
         lens.append(bs - sum(lens))
         return sorted(lens, reverse=True)
+    if popularity.startswith("skewed"):
+        if bs < 3:
+            return [bs]
+        # Create a highly imbalanced distribution by setting the first segment
+        # length to 1 and the remainder to the second segment.
+        return [1, bs - 1]
     raise KeyError(popularity)
 
 
@@ -81,7 +87,7 @@ def lora_ref_impl(
         pytest.param("expand", marks=pytest.mark.xfail(reason="TODO: sgmv expand")),
     ],
 )
-@pytest.mark.parametrize("popularity", ["distinct", "uniform", "zipf:1.5", "identical"])
+@pytest.mark.parametrize("popularity", ["distinct", "uniform", "zipf:1.5", "identical", "skewed"])
 @pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 7, 10, 16, 32, 64, 133])
 @torch.inference_mode()
 def test_sgmv_correctness(dtype_str, h, r, direction, popularity, batch_size):
