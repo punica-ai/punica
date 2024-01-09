@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/punica-ai/punica/compare/v1.1.0...v1.1.1) (2024-01-09)
+
+
+### Bug Fixes
+
+* **sgmv:** deadlock in sgmv_shrink kernel caused by skewed segments ([#35](https://github.com/punica-ai/punica/issues/35)) ([591b598](https://github.com/punica-ai/punica/commit/591b59899f0a20760821785d06b331c8a2e5cb86))
+
 ## [1.1.0](https://github.com/punica-ai/punica/compare/v1.0.3...v1.1.0) (2023-12-30)
 
 
